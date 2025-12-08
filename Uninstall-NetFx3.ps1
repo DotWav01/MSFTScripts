@@ -72,8 +72,8 @@ try {
         $netFx35Status = Get-WindowsOptionalFeature -Online -FeatureName NetFx3 -ErrorAction Stop
         Write-Log "Current NetFx3 state: $($netFx35Status.State)" "INFO"
         
-        if ($netFx35Status.State -eq "Disabled") {
-            Write-Log ".NET Framework 3.5 is already disabled. No action required." "SUCCESS"
+        if ($netFx35Status.State -eq "Disabled" -or $netFx35Status.State -eq "DisabledWithPayloadRemoved") {
+            Write-Log ".NET Framework 3.5 is already uninstalled (State: $($netFx35Status.State)). No action required." "SUCCESS"
             Write-Log "Uninstallation process completed successfully." "SUCCESS"
             
             # Clean up any detection files that might exist
@@ -133,8 +133,9 @@ try {
         $verifyStatus = Get-WindowsOptionalFeature -Online -FeatureName NetFx3 -ErrorAction Stop
         Write-Log "Post-uninstallation NetFx3 state: $($verifyStatus.State)" "INFO"
         
-        if ($verifyStatus.State -eq "Disabled") {
+        if ($verifyStatus.State -eq "Disabled" -or $verifyStatus.State -eq "DisabledWithPayloadRemoved") {
             Write-Log ".NET Framework 3.5 uninstallation completed successfully!" "SUCCESS"
+            Write-Log "Final state: $($verifyStatus.State)" "SUCCESS"
             
             # Clean up detection files
             Write-Log "Cleaning up detection files..." "INFO"
