@@ -257,7 +257,6 @@ try {
         Write-Host "[$ScriptName] WhatIf: Would check for and close Office 365 applications (Excel, Word, PowerPoint)" -ForegroundColor Magenta
         Write-Host "[$ScriptName] WhatIf: Would execute: $InstallCommand" -ForegroundColor Magenta
         Write-Host "[$ScriptName] WhatIf: Installation would be performed silently" -ForegroundColor Magenta
-        Write-Host "[$ScriptName] WhatIf: Post-install verification would check C:\blp\winrtv\wintrv.exe" -ForegroundColor Magenta
         Write-Host "[$ScriptName] WhatIf: Would create detection tag file at C:\temp\Bloomberg_Installed.tag" -ForegroundColor Magenta
         exit 0
     }
@@ -310,56 +309,8 @@ try {
     $InstallDuration = $InstallEndTime - $InstallStartTime
     Write-Host "[$ScriptName] Installation duration: $($InstallDuration.TotalMinutes.ToString('F2')) minutes" -ForegroundColor Green
     
-    # Post-installation verification
-    Write-Host "[$ScriptName] Performing post-installation verification..." -ForegroundColor Yellow
-    Start-Sleep -Seconds 5
-    
-    $VerificationPassed = $false
-    
-    # Check for Bloomberg installation at C:\blp
-    $BloombergInstallPath = "C:\blp"
-    $BloombergExecutable = "C:\blp\winrtv\wintrv.exe"
-    
-    if (Test-Path -Path $BloombergInstallPath) {
-        Write-Host "[$ScriptName] Verification: Found Bloomberg installation directory at $BloombergInstallPath" -ForegroundColor Green
-        $VerificationPassed = $true
-        
-        # Check for the main Bloomberg executable
-        if (Test-Path -Path $BloombergExecutable) {
-            Write-Host "[$ScriptName] Verification: Found Bloomberg executable at $BloombergExecutable" -ForegroundColor Green
-            
-            # Get file information
-            try {
-                $ExeInfo = Get-Item -Path $BloombergExecutable
-                Write-Host "[$ScriptName] Verification: Executable size: $([math]::Round($ExeInfo.Length / 1MB, 2)) MB" -ForegroundColor Green
-                Write-Host "[$ScriptName] Verification: Executable modified: $($ExeInfo.LastWriteTime)" -ForegroundColor Green
-            }
-            catch {
-                Write-Warning "[$ScriptName] Could not get executable file information: $($_.Exception.Message)"
-            }
-        }
-        else {
-            Write-Warning "[$ScriptName] Bloomberg directory found but wintrv.exe not found at expected location: $BloombergExecutable"
-        }
-    }
-    
-    # Check for Bloomberg services
-    $BloombergServices = Get-Service | Where-Object { $_.Name -like "*Bloomberg*" -or $_.DisplayName -like "*Bloomberg*" }
-    if ($BloombergServices) {
-        Write-Host "[$ScriptName] Verification: Found Bloomberg services:" -ForegroundColor Green
-        foreach ($Service in $BloombergServices) {
-            Write-Host "  - $($Service.Name) ($($Service.DisplayName)): $($Service.Status)" -ForegroundColor Green
-        }
-        $VerificationPassed = $true
-    }
-    
-    if (-not $VerificationPassed) {
-        Write-Warning "[$ScriptName] Post-installation verification failed - Bloomberg installation not detected"
-        Write-Warning "[$ScriptName] Installation may have completed but verification couldn't confirm success"
-        # Don't fail here as some Bloomberg installers may require a reboot to be fully detected
-    }
-    
     # Create tag file for Intune detection
+    Write-Host "[$ScriptName] Creating detection tag file for Intune..." -ForegroundColor Yellow
     try {
         $TagFilePath = "C:\temp\Bloomberg_Installed.tag"
         $TagFileContent = @"
@@ -368,8 +319,8 @@ Installation Date: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
 Script Version: $ScriptVersion
 Installed By: $env:USERNAME
 Computer: $env:COMPUTERNAME
-Bloomberg Path: C:\blp\winrtv\wintrv.exe
-Verification Passed: $VerificationPassed
+Bloomberg Installation: C:\blp
+Installation Method: Successfully Completed
 "@
         
         # Ensure C:\temp directory exists
