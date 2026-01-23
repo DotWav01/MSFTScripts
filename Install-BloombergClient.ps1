@@ -15,8 +15,9 @@
 .PARAMETER LogPath
     Path where installation logs will be written. Defaults to C:\softdist\Logs\Bloomberg.
 
-.PARAMETER WhatIf
-    Shows what would be done without actually performing the installation.
+.NOTES
+    WhatIf parameter is automatically available through SupportsShouldProcess.
+    Use -WhatIf to preview actions without executing them.
 
 .EXAMPLE
     .\Install-BloombergClient.ps1
@@ -56,10 +57,7 @@ param(
     
     [Parameter(Mandatory = $false)]
     [ValidateNotNullOrEmpty()]
-    [string]$LogPath = "C:\softdist\Logs\Bloomberg",
-    
-    [Parameter(Mandatory = $false)]
-    [switch]$WhatIf
+    [string]$LogPath = "C:\softdist\Logs\Bloomberg"
 )
 
 # Script variables
