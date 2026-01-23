@@ -4,9 +4,11 @@
 
 .DESCRIPTION
     This script performs a silent uninstallation of the Bloomberg Terminal client application.
-    Uses Bloomberg's native uninstaller (C:\blp\Uninstall\unins000.exe) as the primary method,
-    with registry-based uninstall as a fallback. Removes the detection tag file used by Intune.
-    Designed for deployment through Microsoft Intune as a Win32 application package.
+    Automatically closes Office 365 applications (Excel, Word, PowerPoint) before uninstallation
+    as required by Bloomberg Terminal uninstaller. Uses Bloomberg's native uninstaller 
+    (C:\blp\Uninstall\unins000.exe) as the primary method, with registry-based uninstall as a 
+    fallback. Removes the detection tag file used by Intune. Designed for deployment through 
+    Microsoft Intune as a Win32 application package.
 
 .PARAMETER LogPath
     Path where uninstallation logs will be written. Defaults to C:\softdist\Logs\Bloomberg.
@@ -24,7 +26,7 @@
 
 .EXAMPLE
     .\Uninstall-BloombergClient.ps1 -Force -Verbose
-    Forces uninstallation with verbose output, terminating Bloomberg processes if needed.
+    Forces uninstallation with verbose output, closes Office apps and terminates Bloomberg processes if needed.
 
 .EXAMPLE
     .\Uninstall-BloombergClient.ps1 -WhatIf
@@ -86,6 +88,113 @@ catch {
 }
 
 try {
+    # Check for and close Office 365 applications before uninstallation
+    Write-Host "[$ScriptName] Checking for running Office 365 applications..." -ForegroundColor Yellow
+    
+    $OfficeProcesses = @(
+        @{ Name = "EXCEL"; DisplayName = "Microsoft Excel" },
+        @{ Name = "WINWORD"; DisplayName = "Microsoft Word" },
+        @{ Name = "POWERPNT"; DisplayName = "Microsoft PowerPoint" }
+    )
+    
+    $RunningOfficeApps = @()
+    
+    foreach ($OfficeApp in $OfficeProcesses) {
+        $Processes = Get-Process -Name $OfficeApp.Name -ErrorAction SilentlyContinue
+        if ($Processes) {
+            $RunningOfficeApps += @{
+                ProcessName = $OfficeApp.Name
+                DisplayName = $OfficeApp.DisplayName
+                Processes = $Processes
+            }
+        }
+    }
+    
+    if ($RunningOfficeApps.Count -gt 0) {
+        Write-Host "[$ScriptName] Found running Office 365 applications that need to be closed:" -ForegroundColor Yellow
+        foreach ($App in $RunningOfficeApps) {
+            Write-Host "  - $($App.DisplayName) ($($App.Processes.Count) instance(s))" -ForegroundColor Yellow
+        }
+        
+        Write-Host "[$ScriptName] Bloomberg Terminal uninstaller requires Office applications to be closed" -ForegroundColor Yellow
+        Write-Host "[$ScriptName] Attempting to gracefully close Office applications..." -ForegroundColor Yellow
+        
+        $ClosureSuccess = $true
+        
+        foreach ($App in $RunningOfficeApps) {
+            foreach ($Process in $App.Processes) {
+                try {
+                    Write-Host "[$ScriptName] Closing $($App.DisplayName) (PID: $($Process.Id))..." -ForegroundColor Gray
+                    
+                    # First attempt graceful closure
+                    $Process.CloseMainWindow() | Out-Null
+                    
+                    # Wait up to 10 seconds for graceful closure
+                    $WaitCount = 0
+                    while (-not $Process.HasExited -and $WaitCount -lt 10) {
+                        Start-Sleep -Seconds 1
+                        $WaitCount++
+                    }
+                    
+                    # If still running, force termination with Force parameter or user consent
+                    if (-not $Process.HasExited) {
+                        if ($Force) {
+                            Write-Warning "[$ScriptName] Graceful closure failed, force terminating $($App.DisplayName) (PID: $($Process.Id))"
+                            $Process.Kill()
+                            Start-Sleep -Seconds 2
+                        }
+                        else {
+                            Write-Warning "[$ScriptName] $($App.DisplayName) did not close gracefully. Use -Force to terminate or close manually."
+                            $ClosureSuccess = $false
+                        }
+                    }
+                    
+                    if ($Process.HasExited) {
+                        Write-Host "[$ScriptName] Successfully closed $($App.DisplayName) (PID: $($Process.Id))" -ForegroundColor Green
+                    }
+                    else {
+                        Write-Warning "[$ScriptName] Failed to close $($App.DisplayName) (PID: $($Process.Id))"
+                        $ClosureSuccess = $false
+                    }
+                }
+                catch {
+                    Write-Warning "[$ScriptName] Error closing $($App.DisplayName): $($_.Exception.Message)"
+                    $ClosureSuccess = $false
+                }
+            }
+        }
+        
+        # Final verification that Office apps are closed
+        Start-Sleep -Seconds 3
+        $StillRunning = @()
+        
+        foreach ($OfficeApp in $OfficeProcesses) {
+            $RemainingProcesses = Get-Process -Name $OfficeApp.Name -ErrorAction SilentlyContinue
+            if ($RemainingProcesses) {
+                $StillRunning += @{
+                    ProcessName = $OfficeApp.Name
+                    DisplayName = $OfficeApp.DisplayName
+                    Count = $RemainingProcesses.Count
+                }
+            }
+        }
+        
+        if ($StillRunning.Count -gt 0) {
+            Write-Error "[$ScriptName] Some Office applications are still running after closure attempt:"
+            foreach ($App in $StillRunning) {
+                Write-Error "  - $($App.DisplayName) ($($App.Count) instance(s))"
+            }
+            Write-Warning "[$ScriptName] Bloomberg uninstallation may fail or encounter issues with Office apps running"
+            Write-Warning "[$ScriptName] Continuing with uninstallation attempt..."
+        }
+        else {
+            Write-Host "[$ScriptName] All Office applications successfully closed" -ForegroundColor Green
+        }
+    }
+    else {
+        Write-Host "[$ScriptName] No Office 365 applications found running" -ForegroundColor Green
+    }
+
     # Check for Bloomberg processes
     Write-Host "[$ScriptName] Checking for running Bloomberg processes..." -ForegroundColor Yellow
     
@@ -152,8 +261,9 @@ try {
     }
 
     if ($WhatIf) {
-        Write-Host "[$ScriptName] WhatIf: Would attempt to run Bloomberg uninstaller at C:\blp\Uninstall\unins000.exe" -ForegroundColor Magenta
-        Write-Host "[$ScriptName] WhatIf: Would fallback to registry uninstall string if needed" -ForegroundColor Magenta
+        Write-Host "[$ScriptName] WhatIf: Would check for and close Office 365 applications (Excel, Word, PowerPoint)" -ForegroundColor Magenta
+        Write-Host "[$ScriptName] WhatIf: Would attempt to run Bloomberg uninstaller: C:\blp\Uninstall\unins000.exe /S" -ForegroundColor Magenta
+        Write-Host "[$ScriptName] WhatIf: Would fallback to registry uninstall string with /S if needed" -ForegroundColor Magenta
         Write-Host "[$ScriptName] WhatIf: Would delete tag file C:\temp\Bloomberg_Installed.tag" -ForegroundColor Magenta
         exit 0
     }
@@ -167,8 +277,8 @@ try {
         Write-Host "[$ScriptName] Found Bloomberg uninstaller: $BloombergUninstaller" -ForegroundColor Green
         
         try {
-            $UninstallArgs = @("/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART")
-            Write-Host "[$ScriptName] Executing: $BloombergUninstaller $($UninstallArgs -join ' ')" -ForegroundColor Gray
+            $UninstallArgs = "/S"
+            Write-Host "[$ScriptName] Executing: $BloombergUninstaller $UninstallArgs" -ForegroundColor Gray
             
             $UninstallStartTime = Get-Date
             $Process = Start-Process -FilePath $BloombergUninstaller -ArgumentList $UninstallArgs -Wait -PassThru -NoNewWindow
@@ -218,14 +328,14 @@ try {
                     }
                     
                     # Add silent arguments if not present
-                    if ($UninstallArgs -notlike "*SILENT*" -and $UninstallArgs -notlike "*/q*") {
-                        $UninstallArgs += " /SILENT /SUPPRESSMSGBOXES /NORESTART"
+                    if ($UninstallArgs -notlike "*S*" -and $UninstallArgs -notlike "*s*") {
+                        $UninstallArgs += " /S"
                     }
                     
                     Write-Host "[$ScriptName] Executing: $UninstallExe $UninstallArgs" -ForegroundColor Gray
                     
                     $UninstallStartTime = Get-Date
-                    $Process = Start-Process -FilePath $UninstallExe -ArgumentList $UninstallArgs.Split(' ') -Wait -PassThru -NoNewWindow
+                    $Process = Start-Process -FilePath $UninstallExe -ArgumentList $UninstallArgs -Wait -PassThru -NoNewWindow
                     $UninstallEndTime = Get-Date
                     $UninstallDuration = $UninstallEndTime - $UninstallStartTime
                     
