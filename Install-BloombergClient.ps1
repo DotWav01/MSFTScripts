@@ -257,7 +257,7 @@ try {
         Write-Host "[$ScriptName] WhatIf: Would check for and close Office 365 applications (Excel, Word, PowerPoint)" -ForegroundColor Magenta
         Write-Host "[$ScriptName] WhatIf: Would execute: $InstallCommand" -ForegroundColor Magenta
         Write-Host "[$ScriptName] WhatIf: Installation would be performed silently" -ForegroundColor Magenta
-        Write-Host "[$ScriptName] WhatIf: Post-install verification would check C:\blp\wintrv.exe" -ForegroundColor Magenta
+        Write-Host "[$ScriptName] WhatIf: Post-install verification would check C:\blp\winrtv\wintrv.exe" -ForegroundColor Magenta
         Write-Host "[$ScriptName] WhatIf: Would create detection tag file at C:\temp\Bloomberg_Installed.tag" -ForegroundColor Magenta
         exit 0
     }
@@ -318,7 +318,7 @@ try {
     
     # Check for Bloomberg installation at C:\blp
     $BloombergInstallPath = "C:\blp"
-    $BloombergExecutable = "C:\blp\wintrv.exe"
+    $BloombergExecutable = "C:\blp\winrtv\wintrv.exe"
     
     if (Test-Path -Path $BloombergInstallPath) {
         Write-Host "[$ScriptName] Verification: Found Bloomberg installation directory at $BloombergInstallPath" -ForegroundColor Green
@@ -339,7 +339,7 @@ try {
             }
         }
         else {
-            Write-Warning "[$ScriptName] Bloomberg directory found but wintrv.exe not found at expected location"
+            Write-Warning "[$ScriptName] Bloomberg directory found but wintrv.exe not found at expected location: $BloombergExecutable"
         }
     }
     
@@ -368,7 +368,7 @@ Installation Date: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
 Script Version: $ScriptVersion
 Installed By: $env:USERNAME
 Computer: $env:COMPUTERNAME
-Bloomberg Path: C:\blp\wintrv.exe
+Bloomberg Path: C:\blp\winrtv\wintrv.exe
 Verification Passed: $VerificationPassed
 "@
         
