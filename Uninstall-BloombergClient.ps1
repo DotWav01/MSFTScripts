@@ -4,8 +4,9 @@
 
 .DESCRIPTION
     This script performs a silent uninstallation of the Bloomberg Terminal client application.
+    Uses Bloomberg's native uninstaller (C:\blp\Uninstall\unins000.exe) as the primary method,
+    with registry-based uninstall as a fallback. Removes the detection tag file used by Intune.
     Designed for deployment through Microsoft Intune as a Win32 application package.
-    Includes comprehensive logging, error handling, and exit codes for deployment monitoring.
 
 .PARAMETER LogPath
     Path where uninstallation logs will be written. Defaults to C:\softdist\Logs\Bloomberg.
@@ -93,7 +94,7 @@ try {
     $BloombergProcessNames = @(
         "bloomberg*",
         "terminal*",
-        "wintrm*",
+        "wintrv*",
         "bbg*"
     )
     
@@ -151,101 +152,65 @@ try {
     else {
         Write-Host "[$ScriptName] No Bloomberg processes found running" -ForegroundColor Green
     }
-    
-    # Find Bloomberg installation
-    Write-Host "[$ScriptName] Locating Bloomberg installation..." -ForegroundColor Yellow
-    
-    # Check registry for uninstall information
-    $RegistryPaths = @(
-        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
-        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*",
-        "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*"
-    )
-    
-    $BloombergUninstallInfo = @()
-    foreach ($RegPath in $RegistryPaths) {
-        try {
-            $UninstallEntries = Get-ItemProperty $RegPath -ErrorAction SilentlyContinue | Where-Object { 
-                $_.DisplayName -like "*Bloomberg*" -or $_.DisplayName -like "*Terminal*" 
-            }
-            
-            if ($UninstallEntries) {
-                $BloombergUninstallInfo += $UninstallEntries
-            }
-        }
-        catch {
-            # Registry path might not exist, continue
-        }
-    }
-    
-    if ($BloombergUninstallInfo.Count -eq 0) {
-        Write-Warning "[$ScriptName] Bloomberg Terminal installation not found in registry"
-        
-        # Check for installation directories
-        $BloombergPaths = @(
-            "${env:ProgramFiles}\Bloomberg Terminal",
-            "${env:ProgramFiles(x86)}\Bloomberg Terminal",
-            "${env:ProgramFiles}\Bloomberg",
-            "${env:ProgramFiles(x86)}\Bloomberg"
-        )
-        
-        $ExistingInstall = $null
-        foreach ($Path in $BloombergPaths) {
-            if (Test-Path -Path $Path) {
-                $ExistingInstall = $Path
-                Write-Host "[$ScriptName] Found Bloomberg installation directory: $Path" -ForegroundColor Green
-                break
-            }
-        }
-        
-        if (-not $ExistingInstall) {
-            Write-Host "[$ScriptName] Bloomberg Terminal does not appear to be installed" -ForegroundColor Green
-            Write-Host "[$ScriptName] Uninstallation completed (nothing to uninstall)" -ForegroundColor Green
-            exit 0
-        }
-    }
-    else {
-        Write-Host "[$ScriptName] Found Bloomberg installation(s):" -ForegroundColor Green
-        foreach ($Entry in $BloombergUninstallInfo) {
-            Write-Host "  - $($Entry.DisplayName)" -ForegroundColor Green
-            if ($Entry.DisplayVersion) {
-                Write-Host "    Version: $($Entry.DisplayVersion)" -ForegroundColor Green
-            }
-            if ($Entry.UninstallString) {
-                Write-Host "    Uninstall: $($Entry.UninstallString)" -ForegroundColor Gray
-            }
-        }
-    }
-    
+
     if ($WhatIf) {
-        Write-Host "[$ScriptName] WhatIf: Would uninstall Bloomberg Terminal" -ForegroundColor Magenta
-        if ($BloombergUninstallInfo.Count -gt 0) {
-            foreach ($Entry in $BloombergUninstallInfo) {
-                Write-Host "[$ScriptName] WhatIf: Would execute: $($Entry.UninstallString)" -ForegroundColor Magenta
-            }
-        }
+        Write-Host "[$ScriptName] WhatIf: Would attempt to run Bloomberg uninstaller at C:\blp\Uninstall\unins000.exe" -ForegroundColor Magenta
+        Write-Host "[$ScriptName] WhatIf: Would fallback to registry uninstall string if needed" -ForegroundColor Magenta
+        Write-Host "[$ScriptName] WhatIf: Would delete tag file C:\temp\Bloomberg_Installed.tag" -ForegroundColor Magenta
         exit 0
     }
     
-    # Perform uninstallation
+    # Method 1: Use Bloomberg's uninstaller
+    Write-Host "[$ScriptName] Attempting primary uninstall method..." -ForegroundColor Yellow
+    $BloombergUninstaller = "C:\blp\Uninstall\unins000.exe"
     $UninstallSuccess = $false
     
-    if ($BloombergUninstallInfo.Count -gt 0) {
-        Write-Host "[$ScriptName] Starting Bloomberg Terminal uninstallation via registry entries..." -ForegroundColor Yellow
+    if (Test-Path -Path $BloombergUninstaller) {
+        Write-Host "[$ScriptName] Found Bloomberg uninstaller: $BloombergUninstaller" -ForegroundColor Green
         
-        foreach ($Entry in $BloombergUninstallInfo) {
-            if ($Entry.UninstallString) {
-                try {
-                    Write-Host "[$ScriptName] Uninstalling: $($Entry.DisplayName)" -ForegroundColor Yellow
+        try {
+            $UninstallArgs = @("/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART")
+            Write-Host "[$ScriptName] Executing: $BloombergUninstaller $($UninstallArgs -join ' ')" -ForegroundColor Gray
+            
+            $UninstallStartTime = Get-Date
+            $Process = Start-Process -FilePath $BloombergUninstaller -ArgumentList $UninstallArgs -Wait -PassThru -NoNewWindow
+            $UninstallEndTime = Get-Date
+            $UninstallDuration = $UninstallEndTime - $UninstallStartTime
+            
+            if ($Process.ExitCode -eq 0) {
+                Write-Host "[$ScriptName] Primary uninstall completed successfully (Exit Code: $($Process.ExitCode))" -ForegroundColor Green
+                Write-Host "[$ScriptName] Uninstall duration: $($UninstallDuration.TotalMinutes.ToString('F2')) minutes" -ForegroundColor Green
+                $UninstallSuccess = $true
+            }
+            else {
+                Write-Warning "[$ScriptName] Primary uninstall failed with exit code: $($Process.ExitCode)"
+            }
+        }
+        catch {
+            Write-Warning "[$ScriptName] Primary uninstall failed: $($_.Exception.Message)"
+        }
+    }
+    else {
+        Write-Warning "[$ScriptName] Bloomberg uninstaller not found at: $BloombergUninstaller"
+    }
+    
+    # Method 2: Use registry uninstall string (fallback)
+    if (-not $UninstallSuccess) {
+        Write-Host "[$ScriptName] Attempting registry-based uninstall (fallback method)..." -ForegroundColor Yellow
+        
+        $RegistryPath = "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Bloomberg Terminal_is1"
+        
+        try {
+            if (Test-Path -Path $RegistryPath) {
+                $UninstallInfo = Get-ItemProperty -Path $RegistryPath -ErrorAction Stop
+                
+                if ($UninstallInfo.UninstallString) {
+                    Write-Host "[$ScriptName] Found registry uninstall string: $($UninstallInfo.UninstallString)" -ForegroundColor Green
                     
-                    $UninstallString = $Entry.UninstallString
+                    $UninstallString = $UninstallInfo.UninstallString
                     
                     # Parse uninstall string
                     if ($UninstallString -match '"([^"]+)"(.*)') {
-                        $UninstallExe = $matches[1]
-                        $UninstallArgs = $matches[2].Trim()
-                    }
-                    elseif ($UninstallString -match '(\S+\.exe)(.*)') {
                         $UninstallExe = $matches[1]
                         $UninstallArgs = $matches[2].Trim()
                     }
@@ -254,134 +219,61 @@ try {
                         $UninstallArgs = ""
                     }
                     
-                    # Add silent uninstall arguments
-                    if ($UninstallString -like "*msiexec*") {
-                        # MSI uninstaller
-                        if ($UninstallArgs -notlike "*quiet*" -and $UninstallArgs -notlike "*/q*") {
-                            $UninstallArgs += " /quiet /norestart"
-                        }
-                    }
-                    else {
-                        # Standard uninstaller - try common silent arguments
-                        $SilentArgs = @("/S", "/SILENT", "/VERYSILENT", "/q")
-                        $AddArgs = $true
-                        foreach ($SilentArg in $SilentArgs) {
-                            if ($UninstallArgs -like "*$SilentArg*") {
-                                $AddArgs = $false
-                                break
-                            }
-                        }
-                        if ($AddArgs) {
-                            $UninstallArgs += " /S /VERYSILENT /SUPPRESSMSGBOXES /NORESTART"
-                        }
+                    # Add silent arguments if not present
+                    if ($UninstallArgs -notlike "*SILENT*" -and $UninstallArgs -notlike "*/q*") {
+                        $UninstallArgs += " /SILENT /SUPPRESSMSGBOXES /NORESTART"
                     }
                     
                     Write-Host "[$ScriptName] Executing: $UninstallExe $UninstallArgs" -ForegroundColor Gray
                     
                     $UninstallStartTime = Get-Date
-                    
-                    if ($UninstallString -like "*msiexec*") {
-                        # Use Start-Process for MSI
-                        $Process = Start-Process -FilePath "msiexec.exe" -ArgumentList $UninstallArgs.Split(' ') -Wait -PassThru -NoNewWindow
-                    }
-                    else {
-                        # Use Start-Process for standard uninstaller
-                        $Process = Start-Process -FilePath $UninstallExe -ArgumentList $UninstallArgs.Split(' ') -Wait -PassThru -NoNewWindow
-                    }
-                    
+                    $Process = Start-Process -FilePath $UninstallExe -ArgumentList $UninstallArgs.Split(' ') -Wait -PassThru -NoNewWindow
                     $UninstallEndTime = Get-Date
                     $UninstallDuration = $UninstallEndTime - $UninstallStartTime
                     
                     if ($Process.ExitCode -eq 0 -or $Process.ExitCode -eq 3010) {
-                        Write-Host "[$ScriptName] Uninstallation completed successfully (Exit Code: $($Process.ExitCode))" -ForegroundColor Green
+                        Write-Host "[$ScriptName] Registry-based uninstall completed successfully (Exit Code: $($Process.ExitCode))" -ForegroundColor Green
                         Write-Host "[$ScriptName] Uninstall duration: $($UninstallDuration.TotalMinutes.ToString('F2')) minutes" -ForegroundColor Green
                         $UninstallSuccess = $true
                     }
                     else {
-                        Write-Warning "[$ScriptName] Uninstallation failed with exit code: $($Process.ExitCode)"
+                        Write-Warning "[$ScriptName] Registry-based uninstall failed with exit code: $($Process.ExitCode)"
                     }
                 }
-                catch {
-                    Write-Warning "[$ScriptName] Failed to uninstall $($Entry.DisplayName): $($_.Exception.Message)"
+                else {
+                    Write-Warning "[$ScriptName] Registry entry found but UninstallString is empty"
                 }
+            }
+            else {
+                Write-Warning "[$ScriptName] Bloomberg registry entry not found at: $RegistryPath"
             }
         }
-    }
-    
-    # Manual cleanup if registry uninstall failed or wasn't available
-    if (-not $UninstallSuccess) {
-        Write-Host "[$ScriptName] Attempting manual cleanup..." -ForegroundColor Yellow
-        
-        # Remove installation directories
-        $BloombergPaths = @(
-            "${env:ProgramFiles}\Bloomberg Terminal",
-            "${env:ProgramFiles(x86)}\Bloomberg Terminal",
-            "${env:ProgramFiles}\Bloomberg",
-            "${env:ProgramFiles(x86)}\Bloomberg"
-        )
-        
-        foreach ($Path in $BloombergPaths) {
-            if (Test-Path -Path $Path) {
-                try {
-                    Write-Host "[$ScriptName] Removing directory: $Path" -ForegroundColor Yellow
-                    Remove-Item -Path $Path -Recurse -Force -ErrorAction Stop
-                    Write-Host "[$ScriptName] Successfully removed: $Path" -ForegroundColor Green
-                    $UninstallSuccess = $true
-                }
-                catch {
-                    Write-Warning "[$ScriptName] Failed to remove directory $Path: $($_.Exception.Message)"
-                }
-            }
-        }
-        
-        # Clean up user profile directories
-        $UserBloombergPaths = @(
-            "${env:APPDATA}\Bloomberg",
-            "${env:LOCALAPPDATA}\Bloomberg",
-            "${env:USERPROFILE}\Bloomberg"
-        )
-        
-        foreach ($Path in $UserBloombergPaths) {
-            if (Test-Path -Path $Path) {
-                try {
-                    Write-Host "[$ScriptName] Removing user data: $Path" -ForegroundColor Yellow
-                    Remove-Item -Path $Path -Recurse -Force -ErrorAction Stop
-                    Write-Host "[$ScriptName] Successfully removed: $Path" -ForegroundColor Green
-                }
-                catch {
-                    Write-Warning "[$ScriptName] Failed to remove user data $Path: $($_.Exception.Message)"
-                }
-            }
-        }
-        
-        # Remove Bloomberg services
-        $BloombergServices = Get-Service | Where-Object { 
-            $_.Name -like "*Bloomberg*" -or $_.DisplayName -like "*Bloomberg*" 
-        }
-        
-        foreach ($Service in $BloombergServices) {
-            try {
-                Write-Host "[$ScriptName] Removing service: $($Service.Name)" -ForegroundColor Yellow
-                
-                # Stop service if running
-                if ($Service.Status -eq "Running") {
-                    Stop-Service -Name $Service.Name -Force -ErrorAction Stop
-                }
-                
-                # Remove service
-                & sc.exe delete $Service.Name
-                Write-Host "[$ScriptName] Successfully removed service: $($Service.Name)" -ForegroundColor Green
-            }
-            catch {
-                Write-Warning "[$ScriptName] Failed to remove service $($Service.Name): $($_.Exception.Message)"
-            }
+        catch {
+            Write-Warning "[$ScriptName] Registry-based uninstall failed: $($_.Exception.Message)"
         }
     }
     
     if (-not $UninstallSuccess) {
-        Write-Error "[$ScriptName] Uninstallation failed - no successful uninstall method worked"
+        Write-Error "[$ScriptName] Both uninstall methods failed"
         $ExitCode = 3
         throw "Uninstallation failed"
+    }
+    
+    # Remove detection tag file
+    Write-Host "[$ScriptName] Removing detection tag file..." -ForegroundColor Yellow
+    $TagFilePath = "C:\temp\Bloomberg_Installed.tag"
+    
+    if (Test-Path -Path $TagFilePath) {
+        try {
+            Remove-Item -Path $TagFilePath -Force -ErrorAction Stop
+            Write-Host "[$ScriptName] Successfully removed tag file: $TagFilePath" -ForegroundColor Green
+        }
+        catch {
+            Write-Warning "[$ScriptName] Failed to remove tag file: $($_.Exception.Message)"
+        }
+    }
+    else {
+        Write-Host "[$ScriptName] Tag file not found (already removed): $TagFilePath" -ForegroundColor Gray
     }
     
     # Post-uninstallation verification
@@ -390,36 +282,25 @@ try {
     
     $VerificationPassed = $true
     
-    # Check if Bloomberg directories still exist
-    foreach ($Path in $BloombergPaths) {
-        if (Test-Path -Path $Path) {
-            Write-Warning "[$ScriptName] Bloomberg directory still exists: $Path"
-            $VerificationPassed = $false
-        }
+    # Check if Bloomberg directory still exists
+    if (Test-Path -Path "C:\blp") {
+        Write-Warning "[$ScriptName] Bloomberg directory still exists: C:\blp"
+        $VerificationPassed = $false
     }
     
     # Check registry for remaining Bloomberg entries
-    foreach ($RegPath in $RegistryPaths) {
-        try {
-            $RemainingEntries = Get-ItemProperty $RegPath -ErrorAction SilentlyContinue | Where-Object { 
-                $_.DisplayName -like "*Bloomberg*" 
-            }
-            
-            if ($RemainingEntries) {
-                Write-Warning "[$ScriptName] Bloomberg registry entries still exist:"
-                foreach ($Entry in $RemainingEntries) {
-                    Write-Warning "  - $($Entry.DisplayName)"
-                }
-                $VerificationPassed = $false
-            }
+    try {
+        if (Test-Path -Path $RegistryPath) {
+            Write-Warning "[$ScriptName] Bloomberg registry entry still exists: $RegistryPath"
+            $VerificationPassed = $false
         }
-        catch {
-            # Continue checking
-        }
+    }
+    catch {
+        # Registry path may have been removed
     }
     
     # Check for Bloomberg services
-    $RemainingServices = Get-Service | Where-Object { 
+    $RemainingServices = Get-Service -ErrorAction SilentlyContinue | Where-Object { 
         $_.Name -like "*Bloomberg*" -or $_.DisplayName -like "*Bloomberg*" 
     }
     
@@ -428,6 +309,12 @@ try {
         foreach ($Service in $RemainingServices) {
             Write-Warning "  - $($Service.Name) ($($Service.DisplayName)): $($Service.Status)"
         }
+        $VerificationPassed = $false
+    }
+    
+    # Check tag file is removed
+    if (Test-Path -Path $TagFilePath) {
+        Write-Warning "[$ScriptName] Detection tag file still exists: $TagFilePath"
         $VerificationPassed = $false
     }
     
