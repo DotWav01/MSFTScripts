@@ -14,8 +14,9 @@
 .PARAMETER Force
     Forces uninstallation even if Bloomberg processes are running (will attempt to terminate them).
 
-.PARAMETER WhatIf
-    Shows what would be done without actually performing the uninstallation.
+.NOTES
+    WhatIf parameter is automatically available through SupportsShouldProcess.
+    Use -WhatIf to preview actions without executing them.
 
 .EXAMPLE
     .\Uninstall-BloombergClient.ps1
@@ -55,10 +56,7 @@ param(
     [string]$LogPath = "C:\softdist\Logs\Bloomberg",
     
     [Parameter(Mandatory = $false)]
-    [switch]$Force,
-    
-    [Parameter(Mandatory = $false)]
-    [switch]$WhatIf
+    [switch]$Force
 )
 
 # Script variables
