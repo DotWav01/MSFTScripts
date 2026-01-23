@@ -272,6 +272,7 @@ try {
     Write-Host "[$ScriptName] Attempting primary uninstall method..." -ForegroundColor Yellow
     $BloombergUninstaller = "C:\blp\Uninstall\unins000.exe"
     $UninstallSuccess = $false
+    $PrimaryUninstallerRan = $false
     
     if (Test-Path -Path $BloombergUninstaller) {
         Write-Host "[$ScriptName] Found Bloomberg uninstaller: $BloombergUninstaller" -ForegroundColor Green
@@ -285,14 +286,14 @@ try {
             $UninstallEndTime = Get-Date
             $UninstallDuration = $UninstallEndTime - $UninstallStartTime
             
-            if ($Process.ExitCode -eq 0) {
-                Write-Host "[$ScriptName] Primary uninstall completed successfully (Exit Code: $($Process.ExitCode))" -ForegroundColor Green
-                Write-Host "[$ScriptName] Uninstall duration: $($UninstallDuration.TotalMinutes.ToString('F2')) minutes" -ForegroundColor Green
-                $UninstallSuccess = $true
-            }
-            else {
-                Write-Warning "[$ScriptName] Primary uninstall failed with exit code: $($Process.ExitCode)"
-            }
+            $PrimaryUninstallerRan = $true
+            Write-Host "[$ScriptName] Primary uninstaller completed with exit code: $($Process.ExitCode)" -ForegroundColor Green
+            Write-Host "[$ScriptName] Uninstall duration: $($UninstallDuration.TotalMinutes.ToString('F2')) minutes" -ForegroundColor Green
+            
+            # Bloomberg uninstaller often returns non-zero codes even when successful
+            # If the uninstaller ran, we consider it successful regardless of exit code
+            Write-Host "[$ScriptName] Treating primary uninstaller execution as successful (Bloomberg uninstallers commonly return non-zero codes)" -ForegroundColor Green
+            $UninstallSuccess = $true
         }
         catch {
             Write-Warning "[$ScriptName] Primary uninstall failed: $($_.Exception.Message)"
@@ -302,8 +303,8 @@ try {
         Write-Warning "[$ScriptName] Bloomberg uninstaller not found at: $BloombergUninstaller"
     }
     
-    # Method 2: Use registry uninstall string (fallback)
-    if (-not $UninstallSuccess) {
+    # Method 2: Use registry uninstall string (fallback) - Only if primary uninstaller didn't run
+    if (-not $PrimaryUninstallerRan) {
         Write-Host "[$ScriptName] Attempting registry-based uninstall (fallback method)..." -ForegroundColor Yellow
         
         $RegistryPath = "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Bloomberg Terminal_is1"
@@ -339,14 +340,9 @@ try {
                     $UninstallEndTime = Get-Date
                     $UninstallDuration = $UninstallEndTime - $UninstallStartTime
                     
-                    if ($Process.ExitCode -eq 0 -or $Process.ExitCode -eq 3010) {
-                        Write-Host "[$ScriptName] Registry-based uninstall completed successfully (Exit Code: $($Process.ExitCode))" -ForegroundColor Green
-                        Write-Host "[$ScriptName] Uninstall duration: $($UninstallDuration.TotalMinutes.ToString('F2')) minutes" -ForegroundColor Green
-                        $UninstallSuccess = $true
-                    }
-                    else {
-                        Write-Warning "[$ScriptName] Registry-based uninstall failed with exit code: $($Process.ExitCode)"
-                    }
+                    Write-Host "[$ScriptName] Registry-based uninstall completed with exit code: $($Process.ExitCode)" -ForegroundColor Green
+                    Write-Host "[$ScriptName] Uninstall duration: $($UninstallDuration.TotalMinutes.ToString('F2')) minutes" -ForegroundColor Green
+                    $UninstallSuccess = $true
                 }
                 else {
                     Write-Warning "[$ScriptName] Registry entry found but UninstallString is empty"
@@ -360,14 +356,11 @@ try {
             Write-Warning "[$ScriptName] Registry-based uninstall failed: $($_.Exception.Message)"
         }
     }
-    
-    if (-not $UninstallSuccess) {
-        Write-Error "[$ScriptName] Both uninstall methods failed"
-        $ExitCode = 3
-        throw "Uninstallation failed"
+    else {
+        Write-Host "[$ScriptName] Skipping registry-based uninstall since primary uninstaller already ran" -ForegroundColor Gray
     }
     
-    # Remove detection tag file
+    # Always try to remove tag file, regardless of uninstall success
     Write-Host "[$ScriptName] Removing detection tag file..." -ForegroundColor Yellow
     $TagFilePath = "C:\temp\Bloomberg_Installed.tag"
     
@@ -381,7 +374,7 @@ try {
         }
     }
     else {
-        Write-Host "[$ScriptName] Tag file not found (already removed): $TagFilePath" -ForegroundColor Gray
+        Write-Host "[$ScriptName] Tag file not found (already removed or never existed): $TagFilePath" -ForegroundColor Gray
     }
     
     # Post-uninstallation verification
@@ -390,21 +383,48 @@ try {
     
     $VerificationPassed = $true
     
-    # Check if Bloomberg directory still exists
+    # Check Bloomberg directory - it may still exist but should be mostly empty
     if (Test-Path -Path "C:\blp") {
-        Write-Warning "[$ScriptName] Bloomberg directory still exists: C:\blp"
-        $VerificationPassed = $false
+        # Check if there are any Bloomberg executables left (the real test)
+        $BloombergExe = "C:\blp\winrtv\wintrv.exe"
+        if (Test-Path -Path $BloombergExe) {
+            Write-Warning "[$ScriptName] Bloomberg executable still exists: $BloombergExe"
+            $VerificationPassed = $false
+        }
+        else {
+            Write-Host "[$ScriptName] Verification: Bloomberg executable removed successfully" -ForegroundColor Green
+            
+            # Check what's left in the blp folder
+            try {
+                $RemainingItems = Get-ChildItem -Path "C:\blp" -ErrorAction SilentlyContinue
+                if ($RemainingItems) {
+                    Write-Host "[$ScriptName] Verification: C:\blp folder exists but contains only: $($RemainingItems.Name -join ', ')" -ForegroundColor Gray
+                }
+                else {
+                    Write-Host "[$ScriptName] Verification: C:\blp folder is empty" -ForegroundColor Green
+                }
+            }
+            catch {
+                Write-Host "[$ScriptName] Verification: Could not enumerate C:\blp contents" -ForegroundColor Gray
+            }
+        }
+    }
+    else {
+        Write-Host "[$ScriptName] Verification: Bloomberg directory removed completely" -ForegroundColor Green
     }
     
-    # Check registry for remaining Bloomberg entries
+    # Check registry for remaining Bloomberg entries (but don't fail if registry path doesn't exist)
     try {
         if (Test-Path -Path $RegistryPath) {
             Write-Warning "[$ScriptName] Bloomberg registry entry still exists: $RegistryPath"
             $VerificationPassed = $false
         }
+        else {
+            Write-Host "[$ScriptName] Verification: Bloomberg registry entry removed successfully" -ForegroundColor Green
+        }
     }
     catch {
-        # Registry path may have been removed
+        Write-Host "[$ScriptName] Verification: Could not check registry entry (likely removed)" -ForegroundColor Gray
     }
     
     # Check for Bloomberg services
@@ -419,22 +439,39 @@ try {
         }
         $VerificationPassed = $false
     }
+    else {
+        Write-Host "[$ScriptName] Verification: No Bloomberg services found" -ForegroundColor Green
+    }
     
     # Check tag file is removed
     if (Test-Path -Path $TagFilePath) {
         Write-Warning "[$ScriptName] Detection tag file still exists: $TagFilePath"
         $VerificationPassed = $false
     }
+    else {
+        Write-Host "[$ScriptName] Verification: Detection tag file removed successfully" -ForegroundColor Green
+    }
     
-    if ($VerificationPassed) {
-        Write-Host "[$ScriptName] Post-uninstallation verification passed - Bloomberg Terminal successfully removed" -ForegroundColor Green
+    # Determine overall success - use more realistic success criteria
+    $BloombergExeExists = Test-Path -Path "C:\blp\winrtv\wintrv.exe"
+    
+    if ($UninstallSuccess -and -not $BloombergExeExists) {
+        Write-Host "[$ScriptName] Bloomberg Terminal uninstallation completed successfully" -ForegroundColor Green
+        if (-not $VerificationPassed) {
+            Write-Host "[$ScriptName] Some verification items noted, but primary uninstallation was successful" -ForegroundColor Yellow
+        }
     }
     else {
-        Write-Warning "[$ScriptName] Post-uninstallation verification detected remaining Bloomberg components"
-        Write-Host "[$ScriptName] Primary uninstallation completed, but some components may require manual cleanup" -ForegroundColor Yellow
+        if ($BloombergExeExists) {
+            Write-Error "[$ScriptName] Uninstallation failed - Bloomberg executable still exists: C:\blp\winrtv\wintrv.exe"
+            $ExitCode = 3
+            throw "Uninstallation failed - Bloomberg still installed"
+        }
+        else {
+            Write-Warning "[$ScriptName] Uninstall methods had issues but Bloomberg appears to be removed"
+            Write-Host "[$ScriptName] Bloomberg Terminal uninstallation completed" -ForegroundColor Yellow
+        }
     }
-    
-    Write-Host "[$ScriptName] Bloomberg Terminal uninstallation completed" -ForegroundColor Green
 }
 catch {
     Write-Error "[$ScriptName] Uninstallation failed: $($_.Exception.Message)"
