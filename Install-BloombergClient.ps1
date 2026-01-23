@@ -5,7 +5,9 @@
 .DESCRIPTION
     This script performs a silent installation of the Bloomberg Terminal client application.
     Designed for deployment through Microsoft Intune as a Win32 application package.
-    Includes comprehensive logging, error handling, and exit codes for deployment monitoring.
+    Automatically closes Office 365 applications (Excel, Word, PowerPoint) before installation
+    as required by Bloomberg Terminal installer. Includes comprehensive logging, error handling, 
+    and exit codes for deployment monitoring.
 
 .PARAMETER InstallerPath
     Path to the Bloomberg installer executable file. Defaults to the script directory.
@@ -22,11 +24,11 @@
 
 .EXAMPLE
     .\Install-BloombergClient.ps1 -InstallerPath "C:\Temp\BloombergInstaller.exe" -Verbose
-    Installs Bloomberg client with verbose output and custom installer path.
+    Installs Bloomberg client with verbose output, custom installer path, and closes any running Office apps.
 
 .EXAMPLE
     .\Install-BloombergClient.ps1 -WhatIf
-    Shows what would be done without actually installing.
+    Shows what would be done including Office app closure without actually installing.
 
 .NOTES
     File Name      : Install-BloombergClient.ps1
@@ -133,53 +135,109 @@ try {
     Write-Host "[$ScriptName] Installer size: $([math]::Round($InstallerInfo.Length / 1MB, 2)) MB" -ForegroundColor Green
     Write-Host "[$ScriptName] Installer modified: $($InstallerInfo.LastWriteTime)" -ForegroundColor Green
     
-    # Check if Bloomberg is already installed
-    Write-Host "[$ScriptName] Checking for existing Bloomberg installation..." -ForegroundColor Yellow
+    # Check for and close Office 365 applications before installation
+    Write-Host "[$ScriptName] Checking for running Office 365 applications..." -ForegroundColor Yellow
     
-    $ExistingInstall = $null
-    $BloombergPaths = @(
-        "${env:ProgramFiles}\Bloomberg Terminal",
-        "${env:ProgramFiles(x86)}\Bloomberg Terminal",
-        "${env:ProgramFiles}\Bloomberg",
-        "${env:ProgramFiles(x86)}\Bloomberg"
+    $OfficeProcesses = @(
+        @{ Name = "EXCEL"; DisplayName = "Microsoft Excel" },
+        @{ Name = "WINWORD"; DisplayName = "Microsoft Word" },
+        @{ Name = "POWERPNT"; DisplayName = "Microsoft PowerPoint" }
     )
     
-    foreach ($Path in $BloombergPaths) {
-        if (Test-Path -Path $Path) {
-            $ExistingInstall = $Path
-            break
+    $RunningOfficeApps = @()
+    
+    foreach ($OfficeApp in $OfficeProcesses) {
+        $Processes = Get-Process -Name $OfficeApp.Name -ErrorAction SilentlyContinue
+        if ($Processes) {
+            $RunningOfficeApps += @{
+                ProcessName = $OfficeApp.Name
+                DisplayName = $OfficeApp.DisplayName
+                Processes = $Processes
+            }
         }
     }
     
-    # Check registry for Bloomberg installation
-    $RegistryPaths = @(
-        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
-        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
-    )
-    
-    $BloombergRegistryEntry = $null
-    foreach ($RegPath in $RegistryPaths) {
-        try {
-            $BloombergRegistryEntry = Get-ItemProperty $RegPath | Where-Object { 
-                $_.DisplayName -like "*Bloomberg*" -or $_.DisplayName -like "*Terminal*" 
-            } | Select-Object -First 1
-            if ($BloombergRegistryEntry) { break }
+    if ($RunningOfficeApps.Count -gt 0) {
+        Write-Host "[$ScriptName] Found running Office 365 applications that need to be closed:" -ForegroundColor Yellow
+        foreach ($App in $RunningOfficeApps) {
+            Write-Host "  - $($App.DisplayName) ($($App.Processes.Count) instance(s))" -ForegroundColor Yellow
         }
-        catch {
-            # Registry path might not exist, continue
+        
+        Write-Host "[$ScriptName] Bloomberg Terminal requires Office applications to be closed before installation" -ForegroundColor Yellow
+        Write-Host "[$ScriptName] Attempting to gracefully close Office applications..." -ForegroundColor Yellow
+        
+        $ClosureSuccess = $true
+        
+        foreach ($App in $RunningOfficeApps) {
+            foreach ($Process in $App.Processes) {
+                try {
+                    Write-Host "[$ScriptName] Closing $($App.DisplayName) (PID: $($Process.Id))..." -ForegroundColor Gray
+                    
+                    # First attempt graceful closure
+                    $Process.CloseMainWindow() | Out-Null
+                    
+                    # Wait up to 10 seconds for graceful closure
+                    $WaitCount = 0
+                    while (-not $Process.HasExited -and $WaitCount -lt 10) {
+                        Start-Sleep -Seconds 1
+                        $WaitCount++
+                    }
+                    
+                    # If still running, force termination
+                    if (-not $Process.HasExited) {
+                        Write-Warning "[$ScriptName] Graceful closure failed, force terminating $($App.DisplayName) (PID: $($Process.Id))"
+                        $Process.Kill()
+                        Start-Sleep -Seconds 2
+                    }
+                    
+                    if ($Process.HasExited) {
+                        Write-Host "[$ScriptName] Successfully closed $($App.DisplayName) (PID: $($Process.Id))" -ForegroundColor Green
+                    }
+                    else {
+                        Write-Warning "[$ScriptName] Failed to close $($App.DisplayName) (PID: $($Process.Id))"
+                        $ClosureSuccess = $false
+                    }
+                }
+                catch {
+                    Write-Warning "[$ScriptName] Error closing $($App.DisplayName): $($_.Exception.Message)"
+                    $ClosureSuccess = $false
+                }
+            }
+        }
+        
+        # Final verification that Office apps are closed
+        Start-Sleep -Seconds 3
+        $StillRunning = @()
+        
+        foreach ($OfficeApp in $OfficeProcesses) {
+            $RemainingProcesses = Get-Process -Name $OfficeApp.Name -ErrorAction SilentlyContinue
+            if ($RemainingProcesses) {
+                $StillRunning += @{
+                    ProcessName = $OfficeApp.Name
+                    DisplayName = $OfficeApp.DisplayName
+                    Count = $RemainingProcesses.Count
+                }
+            }
+        }
+        
+        if ($StillRunning.Count -gt 0) {
+            Write-Error "[$ScriptName] Some Office applications are still running after closure attempt:"
+            foreach ($App in $StillRunning) {
+                Write-Error "  - $($App.DisplayName) ($($App.Count) instance(s))"
+            }
+            Write-Warning "[$ScriptName] Bloomberg installation may fail or encounter issues with Office apps running"
+            Write-Warning "[$ScriptName] Continuing with installation attempt..."
+        }
+        else {
+            Write-Host "[$ScriptName] All Office applications successfully closed" -ForegroundColor Green
         }
     }
-    
-    if ($ExistingInstall -or $BloombergRegistryEntry) {
-        Write-Host "[$ScriptName] Bloomberg Terminal appears to be already installed" -ForegroundColor Yellow
-        if ($ExistingInstall) {
-            Write-Host "[$ScriptName] Found installation at: $ExistingInstall" -ForegroundColor Yellow
-        }
-        if ($BloombergRegistryEntry) {
-            Write-Host "[$ScriptName] Registry entry: $($BloombergRegistryEntry.DisplayName) v$($BloombergRegistryEntry.DisplayVersion)" -ForegroundColor Yellow
-        }
-        Write-Host "[$ScriptName] Continuing with installation (will upgrade/repair if needed)" -ForegroundColor Yellow
+    else {
+        Write-Host "[$ScriptName] No Office 365 applications found running" -ForegroundColor Green
     }
+    
+    # Note: Intune handles installation detection separately
+    Write-Host "[$ScriptName] Proceeding with Bloomberg Terminal installation..." -ForegroundColor Yellow
     
     # Prepare installation command
     $InstallArgs = @(
@@ -198,8 +256,11 @@ try {
     $InstallCommand = "& '$InstallerPath' $($InstallArgs -join ' ')"
     
     if ($WhatIf) {
+        Write-Host "[$ScriptName] WhatIf: Would check for and close Office 365 applications (Excel, Word, PowerPoint)" -ForegroundColor Magenta
         Write-Host "[$ScriptName] WhatIf: Would execute: $InstallCommand" -ForegroundColor Magenta
         Write-Host "[$ScriptName] WhatIf: Installation would be performed silently" -ForegroundColor Magenta
+        Write-Host "[$ScriptName] WhatIf: Post-install verification would check C:\blp\wintrv.exe" -ForegroundColor Magenta
+        Write-Host "[$ScriptName] WhatIf: Would create detection tag file at C:\temp\Bloomberg_Installed.tag" -ForegroundColor Magenta
         exit 0
     }
     
@@ -257,42 +318,30 @@ try {
     
     $VerificationPassed = $false
     
-    # Check for Bloomberg installation
-    foreach ($Path in $BloombergPaths) {
-        if (Test-Path -Path $Path) {
-            Write-Host "[$ScriptName] Verification: Found Bloomberg installation at $Path" -ForegroundColor Green
-            $VerificationPassed = $true
-            
-            # Look for executable files
-            $BloombergExe = Get-ChildItem -Path $Path -Filter "*.exe" -Recurse | Where-Object { 
-                $_.Name -like "*bloomberg*" -or $_.Name -like "*terminal*" -or $_.Name -like "*wintrm*"
-            } | Select-Object -First 1
-            
-            if ($BloombergExe) {
-                Write-Host "[$ScriptName] Verification: Found Bloomberg executable at $($BloombergExe.FullName)" -ForegroundColor Green
-            }
-            break
-        }
-    }
+    # Check for Bloomberg installation at C:\blp
+    $BloombergInstallPath = "C:\blp"
+    $BloombergExecutable = "C:\blp\wintrv.exe"
     
-    # Check registry again
-    foreach ($RegPath in $RegistryPaths) {
-        try {
-            $UpdatedRegistryEntry = Get-ItemProperty $RegPath | Where-Object { 
-                $_.DisplayName -like "*Bloomberg*" -or $_.DisplayName -like "*Terminal*" 
-            } | Select-Object -First 1
+    if (Test-Path -Path $BloombergInstallPath) {
+        Write-Host "[$ScriptName] Verification: Found Bloomberg installation directory at $BloombergInstallPath" -ForegroundColor Green
+        $VerificationPassed = $true
+        
+        # Check for the main Bloomberg executable
+        if (Test-Path -Path $BloombergExecutable) {
+            Write-Host "[$ScriptName] Verification: Found Bloomberg executable at $BloombergExecutable" -ForegroundColor Green
             
-            if ($UpdatedRegistryEntry) {
-                Write-Host "[$ScriptName] Verification: Found registry entry: $($UpdatedRegistryEntry.DisplayName)" -ForegroundColor Green
-                if ($UpdatedRegistryEntry.DisplayVersion) {
-                    Write-Host "[$ScriptName] Verification: Version: $($UpdatedRegistryEntry.DisplayVersion)" -ForegroundColor Green
-                }
-                $VerificationPassed = $true
-                break
+            # Get file information
+            try {
+                $ExeInfo = Get-Item -Path $BloombergExecutable
+                Write-Host "[$ScriptName] Verification: Executable size: $([math]::Round($ExeInfo.Length / 1MB, 2)) MB" -ForegroundColor Green
+                Write-Host "[$ScriptName] Verification: Executable modified: $($ExeInfo.LastWriteTime)" -ForegroundColor Green
+            }
+            catch {
+                Write-Warning "[$ScriptName] Could not get executable file information: $($_.Exception.Message)"
             }
         }
-        catch {
-            # Continue checking
+        else {
+            Write-Warning "[$ScriptName] Bloomberg directory found but wintrv.exe not found at expected location"
         }
     }
     
@@ -310,6 +359,34 @@ try {
         Write-Warning "[$ScriptName] Post-installation verification failed - Bloomberg installation not detected"
         Write-Warning "[$ScriptName] Installation may have completed but verification couldn't confirm success"
         # Don't fail here as some Bloomberg installers may require a reboot to be fully detected
+    }
+    
+    # Create tag file for Intune detection
+    try {
+        $TagFilePath = "C:\temp\Bloomberg_Installed.tag"
+        $TagFileContent = @"
+Bloomberg Terminal Installation Tag File
+Installation Date: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+Script Version: $ScriptVersion
+Installed By: $env:USERNAME
+Computer: $env:COMPUTERNAME
+Bloomberg Path: C:\blp\wintrv.exe
+Verification Passed: $VerificationPassed
+"@
+        
+        # Ensure C:\temp directory exists
+        if (-not (Test-Path -Path "C:\temp")) {
+            New-Item -Path "C:\temp" -ItemType Directory -Force | Out-Null
+            Write-Host "[$ScriptName] Created C:\temp directory" -ForegroundColor Green
+        }
+        
+        # Create tag file
+        Set-Content -Path $TagFilePath -Value $TagFileContent -Force
+        Write-Host "[$ScriptName] Created detection tag file: $TagFilePath" -ForegroundColor Green
+    }
+    catch {
+        Write-Warning "[$ScriptName] Failed to create tag file: $($_.Exception.Message)"
+        # Don't fail installation for tag file creation failure
     }
     
     Write-Host "[$ScriptName] Bloomberg Terminal installation completed successfully" -ForegroundColor Green
