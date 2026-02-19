@@ -1,0 +1,7 @@
+"Service","Description","GraphPermissions","AzureADRoles","ExchangeRoles","TotalPermissions"
+"Entra","Handles users, groups, applications, domains, and core identity management","44","10","0","44"
+"Intune","Handles device management, mobile application management, and device compliance","24","5","0","24"
+"Purview","Handles data loss prevention, information protection, compliance, and eDiscovery","23","10","0","23"
+"Teams","Handles Teams policies, calling features, meetings, chat, and communication compliance","41","6","0","41"
+"ExchangeOnline","Handles all Exchange Online mail, transport, compliance, and organization settings","16","5","45","16"
+"MicrosoftDefender","Handles security policies, conditional access, identity protection, and privileged access management","24","7","0","24"
