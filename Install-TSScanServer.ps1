@@ -9,7 +9,7 @@
     ServiceUI.exe. This two-stage approach ensures that both PowerShell AND the
     TSScan GUI wizard are projected into the active user session.
 
-    After successful installation, the TSScan license file (TSScan.twlic) is
+    After successful installation, the TSScan license file (tsscan-site.twlic) is
     automatically copied to the appropriate location.
 
     Session flow:
@@ -23,7 +23,7 @@
     Directory for log files. Defaults to C:\softdist\Logs\TSScanServer.
 
 .PARAMETER LicenseFileName
-    Name of the license file to deploy. Defaults to TSScan.twlic.
+    Name of the license file to deploy. Defaults to tsscan-site.twlic.
 
 .EXAMPLE
     .\Install-TSScanServer.ps1
