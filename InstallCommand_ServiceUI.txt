@@ -2,3 +2,16 @@ Start-ADTProcess -FilePath "$($adtSession.DirFiles)\ServiceUI.exe" `
     -ArgumentList "-Process:explorer.exe `"$($adtSession.DirFiles)\TSScan_server.exe`"" `
     -WindowStyle 'Normal' `
     -WaitForChildProcesses
+
+
+#Batch Method
+@echo off
+"%~dp0TSScan_server.exe"
+
+## <Perform Installation tasks here>
+Write-ADTLogEntry -Message "[v4.0.2] Launching TSScan Server interactive installer via ServiceUI + bat."
+
+Start-ADTProcess -FilePath "$($adtSession.DirFiles)\ServiceUI_x64.exe" `
+    -ArgumentList "-Process:explorer.exe `"$($adtSession.DirFiles)\Launch-TSScan.bat`"" `
+    -CreateNoWindow `
+    -WaitForChildProcesses
