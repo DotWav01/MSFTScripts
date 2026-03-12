@@ -42,3 +42,16 @@ Start-ADTProcess -FilePath "$($adtSession.DirFiles)\ServiceUI_x64.exe" `
     -ArgumentList "-session:$activeSession `"$($adtSession.DirFiles)\Launch-TSScan.bat`"" `
     -WindowStyle 'Hidden' `
     -WaitForChildProcesses
+
+
+#GetADTLoggedonUser
+## <Perform Installation tasks here>
+
+# Get the active user's session ID dynamically
+$activeSession = (Get-ADTLoggedOnUser | Where-Object { $_.IsActiveUserSession } | Select-Object -First 1).SessionId
+Write-ADTLogEntry -Message "[v4.0.2] Active user session ID: $activeSession. Launching TSScan installer via ServiceUI -session."
+
+Start-ADTProcess -FilePath "$($adtSession.DirFiles)\ServiceUI_x64.exe" `
+    -ArgumentList "-session:$activeSession `"$($adtSession.DirFiles)\Launch-TSScan.bat`"" `
+    -WindowStyle 'Hidden' `
+    -WaitForChildProcesses
