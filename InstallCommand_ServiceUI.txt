@@ -1,0 +1,4 @@
+Start-ADTProcess -FilePath "$($adtSession.DirFiles)\ServiceUI.exe" `
+    -ArgumentList "-Process:explorer.exe `"$($adtSession.DirFiles)\TSScan_server.exe`"" `
+    -WindowStyle 'Normal' `
+    -WaitForChildProcesses
