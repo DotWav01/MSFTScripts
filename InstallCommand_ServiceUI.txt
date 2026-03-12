@@ -15,3 +15,18 @@ Start-ADTProcess -FilePath "$($adtSession.DirFiles)\ServiceUI_x64.exe" `
     -ArgumentList "-Process:explorer.exe `"$($adtSession.DirFiles)\Launch-TSScan.bat`"" `
     -CreateNoWindow `
     -WaitForChildProcesses
+
+
+#VBS Method
+Dim shell
+Set shell = CreateObject("WScript.Shell")
+shell.Run """" & CreateObject("Scripting.FileSystemObject").GetParentFolderName(WScript.ScriptFullName) & "\TSScan_server.exe""", 1, True
+Set shell = Nothing
+
+## <Perform Installation tasks here>
+Write-ADTLogEntry -Message "[v4.0.2] Launching TSScan Server interactive installer via ServiceUI + vbs."
+
+Start-ADTProcess -FilePath "$($adtSession.DirFiles)\ServiceUI_x64.exe" `
+    -ArgumentList "-Process:explorer.exe wscript.exe `"$($adtSession.DirFiles)\Launch-TSScan.vbs`"" `
+    -CreateNoWindow `
+    -WaitForChildProcesses
