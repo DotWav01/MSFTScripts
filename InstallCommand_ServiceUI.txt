@@ -55,3 +55,15 @@ Start-ADTProcess -FilePath "$($adtSession.DirFiles)\ServiceUI_x64.exe" `
     -ArgumentList "-session:$activeSession `"$($adtSession.DirFiles)\Launch-TSScan.bat`"" `
     -WindowStyle 'Hidden' `
     -WaitForChildProcesses
+
+
+#VBS Install 
+Dim fso, shell, installerPath
+Set fso = CreateObject("Scripting.FileSystemObject")
+Set shell = CreateObject("WScript.Shell")
+
+installerPath = fso.GetParentFolderName(WScript.ScriptFullName) & "\TSScan_server.exe"
+shell.Run Chr(34) & installerPath & Chr(34), 1, True
+
+Set shell = Nothing
+Set fso = Nothing
