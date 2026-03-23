@@ -6,57 +6,41 @@
     Installs Microsoft.Graph and all its dependencies from a folder previously populated
     by Save-GraphModuleOffline.ps1. No internet or PSGallery access is required.
 
-    Uses direct folder copy into the PSModulePath — does NOT use Register-PSRepository,
-    which requires a NuGet v2 feed structure and causes "no match found" errors with
-    raw Save-Module output folders.
+    By default installs to BOTH PowerShell 5.1 and PowerShell 7+ module paths so the
+    module is available regardless of which PS version is used.
 
-    Supports two installation scopes:
-    - AllUsers   : Installs to $env:ProgramFiles\WindowsPowerShell\Modules (requires elevation)
-    - CurrentUser: Installs to $HOME\Documents\WindowsPowerShell\Modules (no elevation needed)
+    Uses direct folder copy into PSModulePath — no Register-PSRepository needed.
 
 .PARAMETER SourcePath
     Path to the folder containing the downloaded module files (output of Save-GraphModuleOffline.ps1).
     Expected structure: SourcePath\ModuleName\Version\<module files>
 
 .PARAMETER Scope
-    Installation scope. 'AllUsers' (default) or 'CurrentUser'.
-    AllUsers requires the script to be run as Administrator.
+    Installation scope:
+    - AllUsers    (default) : Installs to ProgramFiles paths. Requires elevation.
+    - CurrentUser           : Installs to user Documents paths. No elevation needed.
 
 .PARAMETER Force
     Overwrite existing module versions if already installed.
 
 .PARAMETER ModuleName
-    The top-level module name. Used only for final verification. Defaults to 'Microsoft.Graph'.
+    Top-level module name used for final verification. Defaults to 'Microsoft.Graph'.
 
 .EXAMPLE
     .\Install-GraphModuleOffline.ps1 -SourcePath 'C:\Staging\GraphModuleOffline'
-    Installs all modules from the staging folder for all users (requires elevation).
+    Installs to both PS 5.1 and PS 7 AllUsers paths (requires elevation).
 
 .EXAMPLE
     .\Install-GraphModuleOffline.ps1 -SourcePath 'C:\Staging\GraphModuleOffline' -Scope CurrentUser
-    Installs for the current user only. No elevation required.
+    Installs to both PS 5.1 and PS 7 CurrentUser paths. No elevation needed.
 
 .EXAMPLE
-    .\Install-GraphModuleOffline.ps1 -SourcePath 'C:\Staging\GraphModuleOffline' -Force -Verbose
-    Reinstalls/upgrades all modules, overwriting existing versions.
+    .\Install-GraphModuleOffline.ps1 -SourcePath 'C:\Staging\GraphModuleOffline' -Force
+    Reinstalls/upgrades, overwriting existing versions in both paths.
 
 .NOTES
-    Requirements:
-    - PowerShell 5.1 or later
-    - Administrator rights if using -Scope AllUsers
-    - SourcePath must be the output folder from Save-GraphModuleOffline.ps1
-
-    Save-Module output structure:
-        SourcePath\
-            Microsoft.Graph\
-                2.36.1\
-                    Microsoft.Graph.psd1
-                    ...
-            Microsoft.Graph.Authentication\
-                2.36.1\
-                    ...
-
-    Log file is written to C:\softdist\Logs\
+    Requires PowerShell 5.1 or later. Administrator rights needed for AllUsers scope.
+    Log written to C:\softdist\Logs\
 #>
 
 #Requires -Version 5.1
@@ -68,7 +52,7 @@ param(
     [string]$SourcePath,
 
     [Parameter()]
-    [ValidateSet('AllUsers', 'CurrentUser')]
+    [ValidateSet('AllUsers','CurrentUser')]
     [string]$Scope = 'AllUsers',
 
     [Parameter()]
@@ -81,31 +65,30 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# Logging
+# ── Logging ───────────────────────────────────────────────────────────────────
 $LogDir  = 'C:\softdist\Logs'
 $LogFile = Join-Path $LogDir "Install-GraphModule_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
 
 function Write-Log {
     param([string]$Message, [ValidateSet('INFO','WARN','ERROR')]$Level = 'INFO')
     $entry = "[{0}] [{1}] {2}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Level, $Message
-    Write-Verbose $entry
     if     ($Level -eq 'ERROR') { Write-Error   $Message }
     elseif ($Level -eq 'WARN')  { Write-Warning $Message }
     else                        { Write-Host    $entry   }
     Add-Content -Path $LogFile -Value $entry -ErrorAction SilentlyContinue
 }
 
-# Pre-flight
+# ── Pre-flight ────────────────────────────────────────────────────────────────
 if (-not (Test-Path $LogDir)) {
     New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 }
 
 Write-Host "`n=== Microsoft.Graph Offline Installer ===" -ForegroundColor Cyan
-Write-Log "Source path  : $SourcePath"
-Write-Log "Scope        : $Scope"
-Write-Log "Force        : $Force"
+Write-Log "Source path : $SourcePath"
+Write-Log "Scope       : $Scope"
+Write-Log "Force       : $($Force.IsPresent)"
 
-# Elevation check for AllUsers scope
+# Elevation check for AllUsers
 if ($Scope -eq 'AllUsers') {
     $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
         [Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -115,28 +98,31 @@ if ($Scope -eq 'AllUsers') {
     }
 }
 
-# Resolve install destination — handles both PS 5.1 and PS 7+ paths
-$psMajorVersion = $PSVersionTable.PSVersion.Major
-$installBase = if ($Scope -eq 'AllUsers') {
-    if ($psMajorVersion -ge 6) { "$env:ProgramFiles\PowerShell\Modules" }
-    else                  { "$env:ProgramFiles\WindowsPowerShell\Modules" }
+# ── Target paths — always install to both PS 5.1 and PS 7 ────────────────────
+$installTargets = if ($Scope -eq 'AllUsers') {
+    @(
+        "$env:ProgramFiles\WindowsPowerShell\Modules",   # PS 5.1
+        "$env:ProgramFiles\PowerShell\Modules"           # PS 7+
+    )
 } else {
-    if ($psMajorVersion -ge 6) { "$HOME\Documents\PowerShell\Modules" }
-    else                  { "$HOME\Documents\WindowsPowerShell\Modules" }
+    @(
+        "$HOME\Documents\WindowsPowerShell\Modules",     # PS 5.1
+        "$HOME\Documents\PowerShell\Modules"             # PS 7+
+    )
 }
 
-Write-Log "Install destination: $installBase (PS $psMajorVersion)"
-
-if (-not (Test-Path $installBase)) {
-    if ($PSCmdlet.ShouldProcess($installBase, 'Create module directory')) {
-        New-Item -ItemType Directory -Path $installBase -Force | Out-Null
-        Write-Log "Created module directory: $installBase"
+foreach ($target in $installTargets) {
+    if (-not (Test-Path $target)) {
+        New-Item -ItemType Directory -Path $target -Force | Out-Null
+        Write-Log "Created: $target"
     }
 }
 
-# Discover modules in source
-# Save-Module creates: SourcePath\<ModuleName>\<Version>\<files>
-$modulefolders = Get-ChildItem -Path $SourcePath -Directory | Sort-Object Name
+Write-Log "Install targets:"
+foreach ($target in $installTargets) { Write-Log "  -> $target" }
+
+# ── Discover modules in source ────────────────────────────────────────────────
+$modulefolders = @(Get-ChildItem -Path $SourcePath -Directory | Sort-Object Name)
 
 if ($modulefolders.Count -eq 0) {
     Write-Log "No module folders found in '$SourcePath'. Verify the path is correct." -Level ERROR
@@ -145,78 +131,77 @@ if ($modulefolders.Count -eq 0) {
 
 Write-Log "Found $($modulefolders.Count) module folder(s) to install."
 
-# Copy modules — sub-modules first, meta-module last
-$results   = [System.Collections.Generic.List[PSCustomObject]]::new()
+# ── Copy modules — sub-modules first, meta-module last ───────────────────────
+$results   = [System.Collections.ArrayList]::new()
 $installed = 0
 $skipped   = 0
 $failed    = 0
 
-$subModules = $modulefolders | Where-Object { $_.Name -ne $ModuleName }
-$metaModule = $modulefolders | Where-Object { $_.Name -eq $ModuleName }
-$ordered    = @($subModules) + @($metaModule) | Where-Object { $_ }
+$subModules = @($modulefolders | Where-Object { $_.Name -ne $ModuleName })
+$metaModule = @($modulefolders | Where-Object { $_.Name -eq $ModuleName })
+$ordered    = @($subModules) + @($metaModule) | Where-Object { $_ -ne $null }
 
 foreach ($moduleFolder in $ordered) {
     $name = $moduleFolder.Name
 
-    # Each module folder contains version subfolders (e.g. 2.36.1\)
-    $versionFolders = Get-ChildItem -Path $moduleFolder.FullName -Directory | Sort-Object Name
+    $versionFolders = @(Get-ChildItem -Path $moduleFolder.FullName -Directory | Sort-Object Name)
 
     if ($versionFolders.Count -eq 0) {
-        Write-Log "  SKIP: $name - no version subfolders found (unexpected structure)." -Level WARN
-        $results.Add([PSCustomObject]@{ Module = $name; Version = 'unknown'; Status = 'Skipped - no version folder' })
+        Write-Log "  SKIP: $name - no version subfolders found." -Level WARN
+        $null = $results.Add([PSCustomObject]@{ Module = $name; Version = 'unknown'; Target = 'N/A'; Status = 'Skipped - no version folder' })
         $skipped++
         continue
     }
 
     foreach ($versionFolder in $versionFolders) {
-        $version    = $versionFolder.Name
-        $destModule = Join-Path $installBase $name
-        $destVer    = Join-Path $destModule $version
+        $version = $versionFolder.Name
 
-        # Skip if already installed at this version (unless -Force)
-        if ((Test-Path $destVer) -and -not $Force) {
-            Write-Log "  SKIP: $name v$version (already present)"
-            $results.Add([PSCustomObject]@{ Module = $name; Version = $version; Status = 'Skipped' })
-            $skipped++
-            continue
-        }
+        foreach ($installBase in $installTargets) {
+            $destModule = Join-Path $installBase $name
+            $destVer    = Join-Path $destModule $version
 
-        if ($PSCmdlet.ShouldProcess("$name v$version", "Copy to $destVer")) {
-            try {
-                if (-not (Test-Path $destModule)) {
-                    New-Item -ItemType Directory -Path $destModule -Force | Out-Null
+            if ((Test-Path $destVer) -and -not $Force) {
+                Write-Log "  SKIP: $name v$version in $installBase (already present)"
+                $null = $results.Add([PSCustomObject]@{ Module = $name; Version = $version; Target = $installBase; Status = 'Skipped' })
+                $skipped++
+                continue
+            }
+
+            if ($PSCmdlet.ShouldProcess("$name v$version -> $installBase", 'Copy module')) {
+                try {
+                    if (-not (Test-Path $destModule)) {
+                        New-Item -ItemType Directory -Path $destModule -Force | Out-Null
+                    }
+                    Copy-Item -Path $versionFolder.FullName -Destination $destVer -Recurse -Force -ErrorAction Stop
+                    Write-Log "  OK : $name v$version -> $installBase"
+                    $null = $results.Add([PSCustomObject]@{ Module = $name; Version = $version; Target = $installBase; Status = 'Installed' })
+                    $installed++
+                } catch {
+                    Write-Log "  FAIL: $name v$version -> $installBase | $_" -Level WARN
+                    $null = $results.Add([PSCustomObject]@{ Module = $name; Version = $version; Target = $installBase; Status = "Failed: $_" })
+                    $failed++
                 }
-
-                Copy-Item -Path $versionFolder.FullName -Destination $destVer -Recurse -Force -ErrorAction Stop
-
-                Write-Log "  OK : $name v$version"
-                $results.Add([PSCustomObject]@{ Module = $name; Version = $version; Status = 'Installed' })
-                $installed++
-            } catch {
-                Write-Log "  FAIL: $name v$version - $_" -Level WARN
-                $results.Add([PSCustomObject]@{ Module = $name; Version = $version; Status = "Failed: $_" })
-                $failed++
             }
         }
     }
 }
 
-# Verify
-Write-Log "Verifying $ModuleName availability..."
+# ── Verify ────────────────────────────────────────────────────────────────────
+Write-Log "Verifying $ModuleName..."
 $graphModule = Get-Module -Name $ModuleName -ListAvailable | Sort-Object Version -Descending | Select-Object -First 1
 if ($graphModule) {
-    Write-Log "Verification OK: $ModuleName v$($graphModule.Version) found at $($graphModule.ModuleBase)"
+    Write-Log "Verification OK: $ModuleName v$($graphModule.Version) at $($graphModule.ModuleBase)"
 } else {
-    Write-Log "Verification WARNING: '$ModuleName' not found. You may need to open a new PowerShell session." -Level WARN
+    Write-Log "Verification WARNING: '$ModuleName' not found. Try opening a new PowerShell session." -Level WARN
 }
 
-# Summary
+# ── Summary ───────────────────────────────────────────────────────────────────
 Write-Host "`n=== Installation Summary ===" -ForegroundColor Cyan
 Write-Host "Installed : $installed"
 Write-Host "Skipped   : $skipped  (already present; use -Force to overwrite)"
 Write-Host "Failed    : $failed"
 Write-Host ""
-$results | Format-Table Module, Version, Status -AutoSize
+$results | Format-Table Module, Version, Status -AutoSize -GroupBy Target
 Write-Host "Log: $LogFile" -ForegroundColor Gray
 
 if ($failed -gt 0) {
