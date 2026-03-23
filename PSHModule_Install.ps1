@@ -116,16 +116,16 @@ if ($Scope -eq 'AllUsers') {
 }
 
 # Resolve install destination — handles both PS 5.1 and PS 7+ paths
-$psEdition   = $PSVersionTable.PSVersion.Major
+$psMajorVersion = $PSVersionTable.PSVersion.Major
 $installBase = if ($Scope -eq 'AllUsers') {
-    if ($psEdition -ge 6) { "$env:ProgramFiles\PowerShell\Modules" }
+    if ($psMajorVersion -ge 6) { "$env:ProgramFiles\PowerShell\Modules" }
     else                  { "$env:ProgramFiles\WindowsPowerShell\Modules" }
 } else {
-    if ($psEdition -ge 6) { "$HOME\Documents\PowerShell\Modules" }
+    if ($psMajorVersion -ge 6) { "$HOME\Documents\PowerShell\Modules" }
     else                  { "$HOME\Documents\WindowsPowerShell\Modules" }
 }
 
-Write-Log "Install destination: $installBase (PS $psEdition)"
+Write-Log "Install destination: $installBase (PS $psMajorVersion)"
 
 if (-not (Test-Path $installBase)) {
     if ($PSCmdlet.ShouldProcess($installBase, 'Create module directory')) {
