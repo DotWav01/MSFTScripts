@@ -111,7 +111,19 @@ Write-Log "Install destination: $installBase"
 
 # ── Register local repository ─────────────────────────────────────────────────
 $repoName = 'GraphOfflineRepo'
-$resolvedSource = Resolve-Path $SourcePath
+
+# Register-PSRepository requires a UNC-style or URL string — local paths must be
+# converted to \\localhost\<drive>$\<path> format to avoid the PathInfo/Uri type error.
+function ConvertTo-UNCPath {
+    param([string]$LocalPath)
+    # Already a UNC path
+    if ($LocalPath -match '^\\\\') { return $LocalPath }
+    # Convert C:\foo\bar -> \\localhost\C$\foo\bar
+    $LocalPath -replace '^([A-Za-z]):\\', '\\localhost\$1$\'
+}
+
+$repoSourcePath = ConvertTo-UNCPath -LocalPath ([string](Resolve-Path $SourcePath))
+Write-Log "Repository source (UNC): $repoSourcePath"
 
 # Remove existing temp repo registration if present
 if (Get-PSRepository -Name $repoName -ErrorAction SilentlyContinue) {
@@ -119,10 +131,10 @@ if (Get-PSRepository -Name $repoName -ErrorAction SilentlyContinue) {
     Unregister-PSRepository -Name $repoName
 }
 
-Write-Log "Registering local repository: $repoName -> $resolvedSource"
+Write-Log "Registering local repository: $repoName -> $repoSourcePath"
 try {
     Register-PSRepository -Name $repoName `
-        -SourceLocation $resolvedSource `
+        -SourceLocation $repoSourcePath `
         -InstallationPolicy Trusted `
         -ErrorAction Stop
     Write-Log "Repository registered successfully."
