@@ -6,12 +6,17 @@
     Installs Microsoft.Graph and all its dependencies from a folder previously populated
     by Save-GraphModuleOffline.ps1. No internet or PSGallery access is required.
 
+    Uses direct folder copy into the PSModulePath — does NOT use Register-PSRepository,
+    which requires a NuGet v2 feed structure and causes "no match found" errors with
+    raw Save-Module output folders.
+
     Supports two installation scopes:
-    - AllUsers  : Installs to $env:ProgramFiles\WindowsPowerShell\Modules (requires elevation)
+    - AllUsers   : Installs to $env:ProgramFiles\WindowsPowerShell\Modules (requires elevation)
     - CurrentUser: Installs to $HOME\Documents\WindowsPowerShell\Modules (no elevation needed)
 
 .PARAMETER SourcePath
     Path to the folder containing the downloaded module files (output of Save-GraphModuleOffline.ps1).
+    Expected structure: SourcePath\ModuleName\Version\<module files>
 
 .PARAMETER Scope
     Installation scope. 'AllUsers' (default) or 'CurrentUser'.
@@ -21,8 +26,7 @@
     Overwrite existing module versions if already installed.
 
 .PARAMETER ModuleName
-    Target module to install. Defaults to 'Microsoft.Graph'.
-    The script installs this module and all sub-modules found in SourcePath.
+    The top-level module name. Used only for final verification. Defaults to 'Microsoft.Graph'.
 
 .EXAMPLE
     .\Install-GraphModuleOffline.ps1 -SourcePath 'C:\Staging\GraphModuleOffline'
@@ -34,7 +38,7 @@
 
 .EXAMPLE
     .\Install-GraphModuleOffline.ps1 -SourcePath 'C:\Staging\GraphModuleOffline' -Force -Verbose
-    Reinstalls/upgrades modules, with verbose output.
+    Reinstalls/upgrades all modules, overwriting existing versions.
 
 .NOTES
     Requirements:
@@ -42,7 +46,17 @@
     - Administrator rights if using -Scope AllUsers
     - SourcePath must be the output folder from Save-GraphModuleOffline.ps1
 
-    Log file is written to C:\softdist\Logs\ (consistent with enterprise logging convention).
+    Save-Module output structure:
+        SourcePath\
+            Microsoft.Graph\
+                2.36.1\
+                    Microsoft.Graph.psd1
+                    ...
+            Microsoft.Graph.Authentication\
+                2.36.1\
+                    ...
+
+    Log file is written to C:\softdist\Logs\
 #>
 
 #Requires -Version 5.1
@@ -67,7 +81,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# ── Logging ──────────────────────────────────────────────────────────────────
+# Logging
 $LogDir  = 'C:\softdist\Logs'
 $LogFile = Join-Path $LogDir "Install-GraphModule_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
 
@@ -75,164 +89,141 @@ function Write-Log {
     param([string]$Message, [ValidateSet('INFO','WARN','ERROR')]$Level = 'INFO')
     $entry = "[{0}] [{1}] {2}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Level, $Message
     Write-Verbose $entry
-    if ($Level -eq 'ERROR') { Write-Error $Message }
-    elseif ($Level -eq 'WARN') { Write-Warning $Message }
-    else { Write-Host $entry }
+    if     ($Level -eq 'ERROR') { Write-Error   $Message }
+    elseif ($Level -eq 'WARN')  { Write-Warning $Message }
+    else                        { Write-Host    $entry   }
     Add-Content -Path $LogFile -Value $entry -ErrorAction SilentlyContinue
 }
 
-# ── Pre-flight ────────────────────────────────────────────────────────────────
-# Ensure log directory exists
+# Pre-flight
 if (-not (Test-Path $LogDir)) {
     New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 }
 
 Write-Host "`n=== Microsoft.Graph Offline Installer ===" -ForegroundColor Cyan
-Write-Log "Starting offline installation from: $SourcePath"
-Write-Log "Scope: $Scope | Force: $Force"
+Write-Log "Source path  : $SourcePath"
+Write-Log "Scope        : $Scope"
+Write-Log "Force        : $Force"
 
 # Elevation check for AllUsers scope
 if ($Scope -eq 'AllUsers') {
     $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
         [Security.Principal.WindowsBuiltInRole]::Administrator)
     if (-not $isAdmin) {
-        Write-Log "AllUsers scope requires Administrator privileges. Re-run as Administrator or use -Scope CurrentUser." -Level ERROR
+        Write-Log "AllUsers scope requires Administrator. Re-run elevated or use -Scope CurrentUser." -Level ERROR
         exit 1
     }
 }
 
-# Determine install destination
+# Resolve install destination — handles both PS 5.1 and PS 7+ paths
+$psEdition   = $PSVersionTable.PSVersion.Major
 $installBase = if ($Scope -eq 'AllUsers') {
-    "$env:ProgramFiles\WindowsPowerShell\Modules"
+    if ($psEdition -ge 6) { "$env:ProgramFiles\PowerShell\Modules" }
+    else                  { "$env:ProgramFiles\WindowsPowerShell\Modules" }
 } else {
-    "$HOME\Documents\WindowsPowerShell\Modules"
-}
-Write-Log "Install destination: $installBase"
-
-# ── Register local repository ─────────────────────────────────────────────────
-$repoName = 'GraphOfflineRepo'
-
-# Register-PSRepository requires a UNC-style or URL string — local paths must be
-# converted to \\localhost\<drive>$\<path> format to avoid the PathInfo/Uri type error.
-function ConvertTo-UNCPath {
-    param([string]$LocalPath)
-    # Already a UNC path
-    if ($LocalPath -match '^\\\\') { return $LocalPath }
-    # Convert C:\foo\bar -> \\localhost\C$\foo\bar
-    $LocalPath -replace '^([A-Za-z]):\\', '\\localhost\$1$\'
+    if ($psEdition -ge 6) { "$HOME\Documents\PowerShell\Modules" }
+    else                  { "$HOME\Documents\WindowsPowerShell\Modules" }
 }
 
-$repoSourcePath = ConvertTo-UNCPath -LocalPath ([string](Resolve-Path $SourcePath))
-Write-Log "Repository source (UNC): $repoSourcePath"
+Write-Log "Install destination: $installBase (PS $psEdition)"
 
-# Remove existing temp repo registration if present
-if (Get-PSRepository -Name $repoName -ErrorAction SilentlyContinue) {
-    Write-Log "Removing existing repository registration: $repoName"
-    Unregister-PSRepository -Name $repoName
+if (-not (Test-Path $installBase)) {
+    if ($PSCmdlet.ShouldProcess($installBase, 'Create module directory')) {
+        New-Item -ItemType Directory -Path $installBase -Force | Out-Null
+        Write-Log "Created module directory: $installBase"
+    }
 }
 
-Write-Log "Registering local repository: $repoName -> $repoSourcePath"
-try {
-    Register-PSRepository -Name $repoName `
-        -SourceLocation $repoSourcePath `
-        -InstallationPolicy Trusted `
-        -ErrorAction Stop
-    Write-Log "Repository registered successfully."
-} catch {
-    Write-Log "Failed to register local repository: $_" -Level ERROR
-    exit 1
-}
-
-# ── Discover modules in source ────────────────────────────────────────────────
+# Discover modules in source
+# Save-Module creates: SourcePath\<ModuleName>\<Version>\<files>
 $modulefolders = Get-ChildItem -Path $SourcePath -Directory | Sort-Object Name
-Write-Log "Found $($modulefolders.Count) module folder(s) in source path."
 
 if ($modulefolders.Count -eq 0) {
-    Write-Log "No module folders found in '$SourcePath'. Verify the source path is correct." -Level ERROR
-    Unregister-PSRepository -Name $repoName -ErrorAction SilentlyContinue
+    Write-Log "No module folders found in '$SourcePath'. Verify the path is correct." -Level ERROR
     exit 1
 }
 
-# ── Install modules ───────────────────────────────────────────────────────────
-$results = [System.Collections.Generic.List[PSCustomObject]]::new()
+Write-Log "Found $($modulefolders.Count) module folder(s) to install."
+
+# Copy modules — sub-modules first, meta-module last
+$results   = [System.Collections.Generic.List[PSCustomObject]]::new()
 $installed = 0
 $skipped   = 0
 $failed    = 0
 
-# Install dependencies first (everything except the meta-module), then the meta-module last
-$dependencyModules = $modulefolders | Where-Object { $_.Name -ne $ModuleName }
-$metaModule        = $modulefolders | Where-Object { $_.Name -eq $ModuleName }
-$orderedModules    = @($dependencyModules) + @($metaModule) | Where-Object { $_ }
+$subModules = $modulefolders | Where-Object { $_.Name -ne $ModuleName }
+$metaModule = $modulefolders | Where-Object { $_.Name -eq $ModuleName }
+$ordered    = @($subModules) + @($metaModule) | Where-Object { $_ }
 
-foreach ($folder in $orderedModules) {
-    $name = $folder.Name
+foreach ($moduleFolder in $ordered) {
+    $name = $moduleFolder.Name
 
-    # Detect version from subfolder (Save-Module creates Name\Version\ structure)
-    $versionFolder = Get-ChildItem -Path $folder.FullName -Directory | Sort-Object Name -Descending | Select-Object -First 1
-    $version = if ($versionFolder) { $versionFolder.Name } else { 'unknown' }
+    # Each module folder contains version subfolders (e.g. 2.36.1\)
+    $versionFolders = Get-ChildItem -Path $moduleFolder.FullName -Directory | Sort-Object Name
 
-    # Check if already installed
-    $existingModule = Get-Module -Name $name -ListAvailable | Sort-Object Version -Descending | Select-Object -First 1
-    if ($existingModule -and -not $Force) {
-        Write-Log "SKIP: $name (already installed: v$($existingModule.Version))" -Level WARN
-        $results.Add([PSCustomObject]@{ Module = $name; Version = $version; Status = 'Skipped' })
+    if ($versionFolders.Count -eq 0) {
+        Write-Log "  SKIP: $name - no version subfolders found (unexpected structure)." -Level WARN
+        $results.Add([PSCustomObject]@{ Module = $name; Version = 'unknown'; Status = 'Skipped - no version folder' })
         $skipped++
         continue
     }
 
-    $installParams = @{
-        Name        = $name
-        Repository  = $repoName
-        Scope       = $Scope
-        Force       = $Force.IsPresent
-        ErrorAction = 'Stop'
-    }
+    foreach ($versionFolder in $versionFolders) {
+        $version    = $versionFolder.Name
+        $destModule = Join-Path $installBase $name
+        $destVer    = Join-Path $destModule $version
 
-    if ($PSCmdlet.ShouldProcess("$name v$version", "Install module to $Scope")) {
-        try {
-            Write-Log "Installing: $name v$version"
-            Install-Module @installParams
-            Write-Log "  OK: $name v$version installed."
-            $results.Add([PSCustomObject]@{ Module = $name; Version = $version; Status = 'Installed' })
-            $installed++
-        } catch {
-            Write-Log "  FAILED: $name - $_" -Level WARN
-            $results.Add([PSCustomObject]@{ Module = $name; Version = $version; Status = "Failed: $_" })
-            $failed++
+        # Skip if already installed at this version (unless -Force)
+        if ((Test-Path $destVer) -and -not $Force) {
+            Write-Log "  SKIP: $name v$version (already present)"
+            $results.Add([PSCustomObject]@{ Module = $name; Version = $version; Status = 'Skipped' })
+            $skipped++
+            continue
+        }
+
+        if ($PSCmdlet.ShouldProcess("$name v$version", "Copy to $destVer")) {
+            try {
+                if (-not (Test-Path $destModule)) {
+                    New-Item -ItemType Directory -Path $destModule -Force | Out-Null
+                }
+
+                Copy-Item -Path $versionFolder.FullName -Destination $destVer -Recurse -Force -ErrorAction Stop
+
+                Write-Log "  OK : $name v$version"
+                $results.Add([PSCustomObject]@{ Module = $name; Version = $version; Status = 'Installed' })
+                $installed++
+            } catch {
+                Write-Log "  FAIL: $name v$version - $_" -Level WARN
+                $results.Add([PSCustomObject]@{ Module = $name; Version = $version; Status = "Failed: $_" })
+                $failed++
+            }
         }
     }
 }
 
-# ── Cleanup ───────────────────────────────────────────────────────────────────
-Write-Log "Unregistering temporary repository: $repoName"
-Unregister-PSRepository -Name $repoName -ErrorAction SilentlyContinue
-
-# ── Verify installation ───────────────────────────────────────────────────────
-Write-Log "Verifying Microsoft.Graph installation..."
-try {
-    $graphModule = Get-Module -Name $ModuleName -ListAvailable | Sort-Object Version -Descending | Select-Object -First 1
-    if ($graphModule) {
-        Write-Log "Verification OK: $ModuleName v$($graphModule.Version) is available."
-    } else {
-        Write-Log "Verification WARNING: '$ModuleName' not found in available modules after install." -Level WARN
-    }
-} catch {
-    Write-Log "Verification check failed: $_" -Level WARN
+# Verify
+Write-Log "Verifying $ModuleName availability..."
+$graphModule = Get-Module -Name $ModuleName -ListAvailable | Sort-Object Version -Descending | Select-Object -First 1
+if ($graphModule) {
+    Write-Log "Verification OK: $ModuleName v$($graphModule.Version) found at $($graphModule.ModuleBase)"
+} else {
+    Write-Log "Verification WARNING: '$ModuleName' not found. You may need to open a new PowerShell session." -Level WARN
 }
 
-# ── Summary ───────────────────────────────────────────────────────────────────
+# Summary
 Write-Host "`n=== Installation Summary ===" -ForegroundColor Cyan
 Write-Host "Installed : $installed"
-Write-Host "Skipped   : $skipped (already present; use -Force to overwrite)"
+Write-Host "Skipped   : $skipped  (already present; use -Force to overwrite)"
 Write-Host "Failed    : $failed"
-Write-Host "`nResults:" -ForegroundColor Cyan
-$results | Format-Table -AutoSize
-
-Write-Host "`nLog file: $LogFile" -ForegroundColor Gray
+Write-Host ""
+$results | Format-Table Module, Version, Status -AutoSize
+Write-Host "Log: $LogFile" -ForegroundColor Gray
 
 if ($failed -gt 0) {
-    Write-Host "`nSome modules failed to install. Check the log for details." -ForegroundColor Yellow
+    Write-Host "`nSome modules failed. Check the log for details." -ForegroundColor Yellow
     exit 1
 }
 
-Write-Host "`nInstallation complete. Test with: Import-Module Microsoft.Graph" -ForegroundColor Green
+Write-Host "`nDone. Test with:" -ForegroundColor Green
+Write-Host "  Import-Module Microsoft.Graph" -ForegroundColor Green
+Write-Host "  Get-Module Microsoft.Graph -ListAvailable" -ForegroundColor Green
