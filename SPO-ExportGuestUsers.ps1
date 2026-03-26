@@ -413,7 +413,7 @@ try {
     # Get all sites
     Write-Log "Retrieving all SharePoint sites..."
     $allSites = Invoke-WithRetry -ScriptBlock {
-        Get-PnPTenantSite -Limit All -ErrorAction Stop
+        Get-PnPTenantSite -ErrorAction Stop
     }
 
     # Exclude OneDrive unless requested
