@@ -157,6 +157,11 @@ function Connect-Services {
                           -ClientId $ClientId `
                           -Interactive
         Write-Log "Connected to SPO admin."
+
+        # Capture the access token from the initial interactive login so we can
+        # reuse it for all per-site connections without prompting again each time.
+        $script:SPOAccessToken = Get-PnPAccessToken
+        Write-Log "Access token captured for per-site reuse." -Level VERBOSE
     } catch {
         Write-Log "Failed to connect to SPO admin: $_" -Level ERROR
         throw
@@ -242,7 +247,8 @@ function Get-SiteExternalUsers {
     Write-Log "Processing site: $SiteUrl" -Level VERBOSE
 
     try {
-        Connect-PnPOnline -Url $SiteUrl -ClientId $ClientId -Interactive
+        # Reuse the access token captured at startup — no interactive prompt per site
+        Connect-PnPOnline -Url $SiteUrl -AccessToken $script:SPOAccessToken
     } catch {
         Write-Log "Failed to connect to site '$SiteUrl': $_" -Level ERROR
         return
@@ -416,9 +422,11 @@ try {
         Get-PnPTenantSite -ErrorAction Stop
     }
 
-    # Exclude OneDrive unless requested
+    # Exclude OneDrive unless requested (root site and all personal sites)
     if (-not $IncludeOneDrive) {
-        $allSites = $allSites | Where-Object { $_.Url -notlike '*-my.sharepoint.com/personal/*' }
+        $allSites = $allSites | Where-Object {
+            $_.Url -notlike '*-my.sharepoint.com*'
+        }
     }
 
     if ($SiteFilter) {
