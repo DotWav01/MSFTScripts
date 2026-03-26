@@ -16,6 +16,10 @@
 .PARAMETER TenantName
     The SharePoint tenant name (e.g., 'contoso' for contoso.sharepoint.com).
 
+.PARAMETER ClientId
+    The Client ID (Application ID) of the Entra ID App Registration configured for PnP PowerShell.
+    The app registration must have the required SharePoint and Graph delegated permissions.
+
 .PARAMETER OutputPath
     Path for the output CSV file. Defaults to C:\softdist\Logs\SPO_ExternalUsers_<timestamp>.csv
 
@@ -23,33 +27,41 @@
     If specified, includes OneDrive for Business sites in the audit.
 
 .PARAMETER ThrottleDelayMs
-    Delay in milliseconds between API calls to avoid throttling. Default: 200ms.
+    Delay in milliseconds between API calls to avoid throttling. Default: 200.
+    Pass an integer value only (e.g. -ThrottleDelayMs 500), not a string like '500ms'.
 
 .PARAMETER SiteFilter
     Optional URL filter to scope the audit to specific sites (wildcard supported).
 
 .EXAMPLE
-    .\Get-SPOExternalUserPermissions.ps1 -TenantName "contoso"
+    .\Get-SPOExternalUserPermissions.ps1 -TenantName "contoso" -ClientId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
     Audits all SharePoint sites in the contoso tenant and exports results to the default log path.
 
 .EXAMPLE
-    .\Get-SPOExternalUserPermissions.ps1 -TenantName "contoso" -OutputPath "C:\Reports\ExternalUsers.csv"
+    .\Get-SPOExternalUserPermissions.ps1 -TenantName "contoso" -ClientId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" -OutputPath "C:\Reports\ExternalUsers.csv"
     Audits all sites and saves results to a custom path.
 
 .EXAMPLE
-    .\Get-SPOExternalUserPermissions.ps1 -TenantName "contoso" -SiteFilter "*project*" -Verbose
+    .\Get-SPOExternalUserPermissions.ps1 -TenantName "contoso" -ClientId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" -SiteFilter "*project*" -Verbose
     Audits only sites with 'project' in the URL, with verbose logging.
 
 .EXAMPLE
-    .\Get-SPOExternalUserPermissions.ps1 -TenantName "contoso" -IncludeOneDrive
-    Includes OneDrive for Business sites in the audit.
+    .\Get-SPOExternalUserPermissions.ps1 -TenantName "contoso" -ClientId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" -IncludeOneDrive -ThrottleDelayMs 500
+    Includes OneDrive for Business sites and increases throttle delay to 500ms.
 
 .NOTES
     Requirements:
-    - PnP.PowerShell module (Install-Module PnP.PowerShell)
-    - Microsoft.Graph module (Install-Module Microsoft.Graph)
+    - PnP.PowerShell module        (Install-Module PnP.PowerShell)
+    - Microsoft.Graph module       (Install-Module Microsoft.Graph)
     - SharePoint Online Administrator role
-    - Microsoft Graph: User.Read.All, GroupMember.Read.All, Directory.Read.All
+    - Entra App Registration with:
+        * Delegated: SharePoint > AllSites.FullControl or Sites.Read.All
+        * Delegated: Microsoft Graph > User.Read.All
+        * Delegated: Microsoft Graph > GroupMember.Read.All
+        * Delegated: Microsoft Graph > Directory.Read.All
+        * Authentication > Mobile/desktop redirect URI:
+          https://login.microsoftonline.com/common/oauth2/nativeclient
+        * Authentication > Allow public client flows: Yes
 
     External users are identified by the presence of '#EXT#' in their UPN or
     by UserType = 'Guest' in Entra ID.
@@ -58,7 +70,7 @@
     Throttling: The script includes configurable delays and retry logic.
 
     Author: IT Infrastructure
-    Version: 1.0.0
+    Version: 1.1.0
 #>
 
 #Requires -Modules PnP.PowerShell, Microsoft.Graph.Users, Microsoft.Graph.Groups
@@ -68,6 +80,9 @@ param(
     [Parameter(Mandatory)]
     [string]$TenantName,
 
+    [Parameter(Mandatory)]
+    [string]$ClientId,
+
     [Parameter()]
     [string]$OutputPath,
 
@@ -75,6 +90,7 @@ param(
     [switch]$IncludeOneDrive,
 
     [Parameter()]
+    [ValidateRange(0, 60000)]
     [int]$ThrottleDelayMs = 200,
 
     [Parameter()]
@@ -91,7 +107,7 @@ $script:GraphGroupCache = @{}   # UserId -> array of group display names
 $Timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 
 if (-not $OutputPath) {
-    $LogDir    = 'C:\softdist\Logs'
+    $LogDir = 'C:\softdist\Logs'
     if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
     $OutputPath = Join-Path $LogDir "SPO_ExternalUsers_$Timestamp.csv"
 }
@@ -137,7 +153,9 @@ function Invoke-WithRetry {
 function Connect-Services {
     Write-Log "Connecting to SharePoint Online admin..."
     try {
-        Connect-PnPOnline -Url "https://$TenantName-admin.sharepoint.com" -Interactive
+        Connect-PnPOnline -Url "https://$TenantName-admin.sharepoint.com" `
+                          -ClientId $ClientId `
+                          -Interactive
         Write-Log "Connected to SPO admin."
     } catch {
         Write-Log "Failed to connect to SPO admin: $_" -Level ERROR
@@ -146,7 +164,8 @@ function Connect-Services {
 
     Write-Log "Connecting to Microsoft Graph..."
     try {
-        Connect-MgGraph -Scopes "User.Read.All", "GroupMember.Read.All", "Directory.Read.All" -NoWelcome
+        Connect-MgGraph -Scopes "User.Read.All", "GroupMember.Read.All", "Directory.Read.All" `
+                        -NoWelcome
         Write-Log "Connected to Microsoft Graph."
     } catch {
         Write-Log "Failed to connect to Microsoft Graph: $_" -Level ERROR
@@ -223,7 +242,7 @@ function Get-SiteExternalUsers {
     Write-Log "Processing site: $SiteUrl" -Level VERBOSE
 
     try {
-        Connect-PnPOnline -Url $SiteUrl -Interactive
+        Connect-PnPOnline -Url $SiteUrl -ClientId $ClientId -Interactive
     } catch {
         Write-Log "Failed to connect to site '$SiteUrl': $_" -Level ERROR
         return
@@ -273,9 +292,12 @@ function Get-SiteExternalUsers {
         $web = Invoke-WithRetry -ScriptBlock { Get-PnPWeb -Includes RoleAssignments -ErrorAction Stop }
         foreach ($ra in $web.RoleAssignments) {
             try {
-                $ra.EnsureProperties([Microsoft.SharePoint.Client.RoleAssignment],'Member','RoleDefinitionBindings')
+                $ra.EnsureProperties([Microsoft.SharePoint.Client.RoleAssignment], 'Member', 'RoleDefinitionBindings')
                 $member = $ra.Member
-                $roles  = ($ra.RoleDefinitionBindings | ForEach-Object { $_.EnsureProperties([Microsoft.SharePoint.Client.RoleDefinition],'Name'); $_.Name }) -join '; '
+                $roles  = ($ra.RoleDefinitionBindings | ForEach-Object {
+                    $_.EnsureProperties([Microsoft.SharePoint.Client.RoleDefinition], 'Name')
+                    $_.Name
+                }) -join '; '
 
                 # Could be a user or an Entra group assigned directly
                 if ($member.PrincipalType -eq 'User') {
@@ -337,7 +359,10 @@ function Get-SiteExternalUsers {
         $entraGroupList = 'N/A'
         $entraUser      = $null
         if ($email) {
-            $entraUser = Get-EntraUser -UPN $loginName.Replace('i:0#.f|membership|', '').Trim()
+            # Strip claim provider prefix for Graph lookup
+            $upnForGraph = $loginName -replace '^i:0#\.f\|membership\|', ''
+            $entraUser = Get-EntraUser -UPN $upnForGraph
+
             if (-not $entraUser -and $email) {
                 # Fallback: search by email
                 try {
@@ -350,23 +375,23 @@ function Get-SiteExternalUsers {
             }
 
             if ($entraUser) {
-                $entraGroups = Get-UserEntraGroups -UserId $entraUser.Id
+                $entraGroups    = Get-UserEntraGroups -UserId $entraUser.Id
                 $entraGroupList = if ($entraGroups) { $entraGroups -join ' | ' } else { 'None' }
                 if (-not $displayName) { $displayName = $entraUser.DisplayName }
             }
         }
 
         $script:Results.Add([PSCustomObject]@{
-            SiteUrl          = $SiteUrl
-            UserDisplayName  = $displayName
-            UserEmail        = $email
-            LoginName        = $loginName
-            UserType         = 'External/Guest'
-            PermissionLevel  = $spoPermLevel
-            GrantedVia       = $grantedVia
-            SPO_Groups       = $spoGroupList
-            EntraID_Groups   = $entraGroupList
-            EntraUserFound   = ($null -ne $entraUser)
+            SiteUrl         = $SiteUrl
+            UserDisplayName = $displayName
+            UserEmail       = $email
+            LoginName       = $loginName
+            UserType        = 'External/Guest'
+            PermissionLevel = $spoPermLevel
+            GrantedVia      = $grantedVia
+            SPO_Groups      = $spoGroupList
+            EntraID_Groups  = $entraGroupList
+            EntraUserFound  = ($null -ne $entraUser)
         })
 
         Start-Sleep -Milliseconds $ThrottleDelayMs
@@ -387,13 +412,13 @@ try {
 
     # Get all sites
     Write-Log "Retrieving all SharePoint sites..."
-    $getAllSitesParams = @{ Limit = 'All' }
-    if (-not $IncludeOneDrive) {
-        $getAllSitesParams['Filter'] = "Url -notlike '*-my.sharepoint.com/personal/*'"
+    $allSites = Invoke-WithRetry -ScriptBlock {
+        Get-PnPTenantSite -Limit All -ErrorAction Stop
     }
 
-    $allSites = Invoke-WithRetry -ScriptBlock {
-        Get-PnPTenantSite @getAllSitesParams -ErrorAction Stop
+    # Exclude OneDrive unless requested
+    if (-not $IncludeOneDrive) {
+        $allSites = $allSites | Where-Object { $_.Url -notlike '*-my.sharepoint.com/personal/*' }
     }
 
     if ($SiteFilter) {
