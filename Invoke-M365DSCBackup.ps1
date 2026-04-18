@@ -80,6 +80,14 @@
 .PARAMETER EmailTo
     Array of recipient addresses for the summary email.
 
+.PARAMETER EmailSPAppId
+    Application (client) ID of the dedicated service principal used for Graph mail send.
+    Corresponds to Email.AppId in the config file.
+
+.PARAMETER EmailSPCertThumbprint
+    Certificate thumbprint for the mail send service principal.
+    Corresponds to Email.CertThumbprint in the config file.
+
 .PARAMETER SkipUpload
     Switch. If set, skips the Azure Storage upload step.
 
@@ -110,7 +118,7 @@
 
 .NOTES
     Author      : IT Infrastructure
-    Version     : 1.2.0
+    Version     : 1.4.0
     Requires    : Microsoft365DSC, Az.Storage, Az.Accounts modules
     Auth model  : Per-workload credentials in config file. Workloads that share a real-world SPN
                   (Exchange+Purview, SharePoint+OneDrive, Intune+Defender) use the same AppId and
@@ -137,6 +145,8 @@ param(
     [Parameter()] [string]   $ManagedIdentityClientId,
     [Parameter()] [string]   $EmailFrom,
     [Parameter()] [string[]] $EmailTo,
+    [Parameter()] [string]   $EmailSPAppId,
+    [Parameter()] [string]   $EmailSPCertThumbprint,
     [Parameter()] [switch]   $SkipUpload,
     [Parameter()] [switch]   $SkipEmail,
     [Parameter()] [switch]   $SkipReport,
@@ -855,22 +865,28 @@ function Main {
     }
 
     # ── Resolve effective settings (param > config > default) ─────────────────
-    $effectiveBackupRoot   = Resolve-Setting $BackupRoot         ($cfg?.Global?.BackupRoot)
-    $effectiveTenantId     = Resolve-Setting $TenantId           ($cfg?.Global?.TenantId)
-    $effectiveWorkloads    = if ($Workloads) { $Workloads } elseif ($cfg?.Global?.DefaultWorkloads) { [string[]]$cfg.Global.DefaultWorkloads } else { @() }
-    $effectiveStorAcct     = Resolve-Setting $StorageAccountName    ($cfg?.Storage?.AccountName)
-    $effectiveStorContainer= Resolve-Setting $StorageContainerName  ($cfg?.Storage?.ContainerName)   'm365dsc-backups'
-    $effectiveStorRG       = Resolve-Setting $StorageResourceGroup   ($cfg?.Storage?.ResourceGroup)
-    $effectiveStorSubId    = Resolve-Setting $StorageSubscriptionId  ($cfg?.Storage?.SubscriptionId)
-    $effectiveStorSPAppId  = Resolve-Setting $StorageSPAppId         ($cfg?.Storage?.SPAppId)
-    $effectiveStorSPCert   = Resolve-Setting $StorageSPCertThumbprint ($cfg?.Storage?.SPCertThumbprint)
-    $effectiveUseMI        = $UseManagedIdentity.IsPresent -or [bool]($cfg?.Storage?.UseManagedIdentity)
-    $effectiveMIClientId   = Resolve-Setting $ManagedIdentityClientId ($cfg?.Storage?.ManagedIdentityClientId)
-    $effectiveEmailFrom    = Resolve-Setting $EmailFrom               ($cfg?.Email?.From)
-    $effectiveEmailTo      = if ($EmailTo) { $EmailTo } elseif ($cfg?.Email?.To) { $cfg.Email.To } else { @() }
+    $cfgGlobal  = if ($cfg)          { $cfg.Global   } else { $null }
+    $cfgStorage = if ($cfg)          { $cfg.Storage  } else { $null }
+    $cfgEmail   = if ($cfg)          { $cfg.Email    } else { $null }
+
+    $effectiveBackupRoot    = Resolve-Setting $BackupRoot            (if ($cfgGlobal)  { $cfgGlobal.BackupRoot              } else { $null })
+    $effectiveTenantId      = Resolve-Setting $TenantId              (if ($cfgGlobal)  { $cfgGlobal.TenantId                } else { $null })
+    $effectiveWorkloads     = if ($Workloads) { $Workloads } elseif ($cfgGlobal -and $cfgGlobal.DefaultWorkloads) { [string[]]$cfgGlobal.DefaultWorkloads } else { @() }
+    $effectiveStorAcct      = Resolve-Setting $StorageAccountName    (if ($cfgStorage) { $cfgStorage.AccountName            } else { $null })
+    $effectiveStorContainer = Resolve-Setting $StorageContainerName  (if ($cfgStorage) { $cfgStorage.ContainerName          } else { $null }) 'm365dsc-backups'
+    $effectiveStorRG        = Resolve-Setting $StorageResourceGroup  (if ($cfgStorage) { $cfgStorage.ResourceGroup          } else { $null })
+    $effectiveStorSubId     = Resolve-Setting $StorageSubscriptionId (if ($cfgStorage) { $cfgStorage.SubscriptionId         } else { $null })
+    $effectiveStorSPAppId   = Resolve-Setting $StorageSPAppId        (if ($cfgStorage) { $cfgStorage.SPAppId                } else { $null })
+    $effectiveStorSPCert    = Resolve-Setting $StorageSPCertThumbprint (if ($cfgStorage) { $cfgStorage.SPCertThumbprint     } else { $null })
+    $effectiveUseMI         = $UseManagedIdentity.IsPresent -or ($cfgStorage -and [bool]$cfgStorage.UseManagedIdentity)
+    $effectiveMIClientId    = Resolve-Setting $ManagedIdentityClientId (if ($cfgStorage) { $cfgStorage.ManagedIdentityClientId } else { $null })
+    $effectiveEmailFrom     = Resolve-Setting $EmailFrom              (if ($cfgEmail) { $cfgEmail.From           } else { $null })
+    $effectiveEmailTo       = if ($EmailTo) { $EmailTo } elseif ($cfgEmail -and $cfgEmail.To) { $cfgEmail.To } else { @() }
+    $effectiveEmailSPAppId  = Resolve-Setting $EmailSPAppId          (if ($cfgEmail) { $cfgEmail.AppId          } else { $null })
+    $effectiveEmailSPCert   = Resolve-Setting $EmailSPCertThumbprint (if ($cfgEmail) { $cfgEmail.CertThumbprint } else { $null })
     $doUpload              = -not $SkipUpload.IsPresent
     $doReport              = -not $SkipReport.IsPresent
-    $doEmail               = -not $SkipEmail.IsPresent
+    $doEmail               = if ($SkipEmail.IsPresent) { $false } elseif ($cfgEmail -and $null -ne $cfgEmail.Enabled) { [bool]$cfgEmail.Enabled } else { $true }
 
     # ── Validate required settings ────────────────────────────────────────────
     if (-not $effectiveBackupRoot)   { throw 'BackupRoot is required.' }
@@ -921,13 +937,13 @@ function Main {
 
         # Get per-workload auth from config (or fall back to global)
         $wlCfg = $null
-        if ($cfg?.Workloads) {
+        if ($cfg -and $cfg.Workloads) {
             $wlCfg = $cfg.Workloads | Where-Object { $_.Name -eq $wl } | Select-Object -First 1
         }
 
-        $authAppId   = if ($wlCfg?.ApplicationId)        { $wlCfg.ApplicationId }        else { $cfg?.Global?.DefaultApplicationId }
-        $authCert    = if ($wlCfg?.CertificateThumbprint) { $wlCfg.CertificateThumbprint } else { $cfg?.Global?.DefaultCertThumbprint }
-        $overrideComps = if ($wlCfg?.Components)          { $wlCfg.Components }            else { @() }
+        $authAppId     = if ($wlCfg -and $wlCfg.ApplicationId)        { $wlCfg.ApplicationId }        else { if ($cfgGlobal) { $cfgGlobal.DefaultApplicationId } else { $null } }
+        $authCert      = if ($wlCfg -and $wlCfg.CertificateThumbprint) { $wlCfg.CertificateThumbprint } else { if ($cfgGlobal) { $cfgGlobal.DefaultCertThumbprint } else { $null } }
+        $overrideComps = if ($wlCfg -and $wlCfg.Components)            { $wlCfg.Components }            else { @() }
 
         if (-not $authAppId -or -not $authCert) {
             Write-Log "[$wl] Missing ApplicationId or CertificateThumbprint — skipping." -Level ERROR
@@ -974,8 +990,8 @@ function Main {
 
     # ── Send email ────────────────────────────────────────────────────────────
     if ($doEmail) {
-        if (-not $effectiveEmailFrom -or $effectiveEmailTo.Count -eq 0 -or -not $effectiveStorSPAppId -or -not $effectiveStorSPCert) {
-            Write-Log "Email parameters incomplete — skipping email." -Level WARN
+        if (-not $effectiveEmailFrom -or $effectiveEmailTo.Count -eq 0 -or -not $effectiveEmailSPAppId -or -not $effectiveEmailSPCert) {
+            Write-Log "Email parameters incomplete (From/To/AppId/CertThumbprint required) — skipping email." -Level WARN
         } else {
             $htmlBody = Build-SummaryHtml `
                 -Results       $allResults `
@@ -986,8 +1002,8 @@ function Main {
 
             Send-BackupSummaryEmail `
                 -TenantId        $effectiveTenantId `
-                -AppId           $effectiveStorSPAppId `
-                -CertThumbprint  $effectiveStorSPCert `
+                -AppId           $effectiveEmailSPAppId `
+                -CertThumbprint  $effectiveEmailSPCert `
                 -FromAddress     $effectiveEmailFrom `
                 -ToAddresses     $effectiveEmailTo `
                 -HtmlBody        $htmlBody `
