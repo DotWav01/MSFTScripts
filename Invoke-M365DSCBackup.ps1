@@ -118,7 +118,7 @@
 
 .NOTES
     Author      : IT Infrastructure
-    Version     : 1.4.0
+    Version     : 1.4.1
     Requires    : Microsoft365DSC, Az.Storage, Az.Accounts modules
     Auth model  : Per-workload credentials in config file. Workloads that share a real-world SPN
                   (Exchange+Purview, SharePoint+OneDrive, Intune+Defender) use the same AppId and
@@ -865,25 +865,38 @@ function Main {
     }
 
     # ── Resolve effective settings (param > config > default) ─────────────────
-    $cfgGlobal  = if ($cfg)          { $cfg.Global   } else { $null }
-    $cfgStorage = if ($cfg)          { $cfg.Storage  } else { $null }
-    $cfgEmail   = if ($cfg)          { $cfg.Email    } else { $null }
+    $cfgGlobal  = if ($cfg) { $cfg.Global  } else { $null }
+    $cfgStorage = if ($cfg) { $cfg.Storage } else { $null }
+    $cfgEmail   = if ($cfg) { $cfg.Email   } else { $null }
 
-    $effectiveBackupRoot    = Resolve-Setting $BackupRoot            (if ($cfgGlobal)  { $cfgGlobal.BackupRoot              } else { $null })
-    $effectiveTenantId      = Resolve-Setting $TenantId              (if ($cfgGlobal)  { $cfgGlobal.TenantId                } else { $null })
+    $cfgBackupRoot            = if ($cfgGlobal)  { $cfgGlobal.BackupRoot              } else { $null }
+    $cfgTenantId              = if ($cfgGlobal)  { $cfgGlobal.TenantId                } else { $null }
+    $cfgStorAcct              = if ($cfgStorage) { $cfgStorage.AccountName            } else { $null }
+    $cfgStorContainer         = if ($cfgStorage) { $cfgStorage.ContainerName          } else { $null }
+    $cfgStorRG                = if ($cfgStorage) { $cfgStorage.ResourceGroup          } else { $null }
+    $cfgStorSubId             = if ($cfgStorage) { $cfgStorage.SubscriptionId         } else { $null }
+    $cfgStorSPAppId           = if ($cfgStorage) { $cfgStorage.SPAppId                } else { $null }
+    $cfgStorSPCert            = if ($cfgStorage) { $cfgStorage.SPCertThumbprint       } else { $null }
+    $cfgMIClientId            = if ($cfgStorage) { $cfgStorage.ManagedIdentityClientId } else { $null }
+    $cfgEmailFrom             = if ($cfgEmail)   { $cfgEmail.From                     } else { $null }
+    $cfgEmailAppId            = if ($cfgEmail)   { $cfgEmail.AppId                    } else { $null }
+    $cfgEmailCert             = if ($cfgEmail)   { $cfgEmail.CertThumbprint           } else { $null }
+
+    $effectiveBackupRoot    = Resolve-Setting $BackupRoot             $cfgBackupRoot
+    $effectiveTenantId      = Resolve-Setting $TenantId              $cfgTenantId
     $effectiveWorkloads     = if ($Workloads) { $Workloads } elseif ($cfgGlobal -and $cfgGlobal.DefaultWorkloads) { [string[]]$cfgGlobal.DefaultWorkloads } else { @() }
-    $effectiveStorAcct      = Resolve-Setting $StorageAccountName    (if ($cfgStorage) { $cfgStorage.AccountName            } else { $null })
-    $effectiveStorContainer = Resolve-Setting $StorageContainerName  (if ($cfgStorage) { $cfgStorage.ContainerName          } else { $null }) 'm365dsc-backups'
-    $effectiveStorRG        = Resolve-Setting $StorageResourceGroup  (if ($cfgStorage) { $cfgStorage.ResourceGroup          } else { $null })
-    $effectiveStorSubId     = Resolve-Setting $StorageSubscriptionId (if ($cfgStorage) { $cfgStorage.SubscriptionId         } else { $null })
-    $effectiveStorSPAppId   = Resolve-Setting $StorageSPAppId        (if ($cfgStorage) { $cfgStorage.SPAppId                } else { $null })
-    $effectiveStorSPCert    = Resolve-Setting $StorageSPCertThumbprint (if ($cfgStorage) { $cfgStorage.SPCertThumbprint     } else { $null })
+    $effectiveStorAcct      = Resolve-Setting $StorageAccountName    $cfgStorAcct
+    $effectiveStorContainer = Resolve-Setting $StorageContainerName  $cfgStorContainer  'm365dsc-backups'
+    $effectiveStorRG        = Resolve-Setting $StorageResourceGroup  $cfgStorRG
+    $effectiveStorSubId     = Resolve-Setting $StorageSubscriptionId $cfgStorSubId
+    $effectiveStorSPAppId   = Resolve-Setting $StorageSPAppId        $cfgStorSPAppId
+    $effectiveStorSPCert    = Resolve-Setting $StorageSPCertThumbprint $cfgStorSPCert
     $effectiveUseMI         = $UseManagedIdentity.IsPresent -or ($cfgStorage -and [bool]$cfgStorage.UseManagedIdentity)
-    $effectiveMIClientId    = Resolve-Setting $ManagedIdentityClientId (if ($cfgStorage) { $cfgStorage.ManagedIdentityClientId } else { $null })
-    $effectiveEmailFrom     = Resolve-Setting $EmailFrom              (if ($cfgEmail) { $cfgEmail.From           } else { $null })
+    $effectiveMIClientId    = Resolve-Setting $ManagedIdentityClientId $cfgMIClientId
+    $effectiveEmailFrom     = Resolve-Setting $EmailFrom             $cfgEmailFrom
     $effectiveEmailTo       = if ($EmailTo) { $EmailTo } elseif ($cfgEmail -and $cfgEmail.To) { $cfgEmail.To } else { @() }
-    $effectiveEmailSPAppId  = Resolve-Setting $EmailSPAppId          (if ($cfgEmail) { $cfgEmail.AppId          } else { $null })
-    $effectiveEmailSPCert   = Resolve-Setting $EmailSPCertThumbprint (if ($cfgEmail) { $cfgEmail.CertThumbprint } else { $null })
+    $effectiveEmailSPAppId  = Resolve-Setting $EmailSPAppId          $cfgEmailAppId
+    $effectiveEmailSPCert   = Resolve-Setting $EmailSPCertThumbprint $cfgEmailCert
     $doUpload              = -not $SkipUpload.IsPresent
     $doReport              = -not $SkipReport.IsPresent
     $doEmail               = if ($SkipEmail.IsPresent) { $false } elseif ($cfgEmail -and $null -ne $cfgEmail.Enabled) { [bool]$cfgEmail.Enabled } else { $true }
@@ -998,7 +1011,7 @@ function Main {
                 -RunTimestamp  $Script:RunTimestamp `
                 -BackupRoot    $effectiveBackupRoot
 
-            $subject = "M365DSC Backup - $Script:RunTimestamp | $success/$($allResults.Count) Succeeded"
+            $subject = "M365DSC Backup - $Script:RunTimestamp `| $success/$($allResults.Count) Succeeded"
 
             Send-BackupSummaryEmail `
                 -TenantId        $effectiveTenantId `
