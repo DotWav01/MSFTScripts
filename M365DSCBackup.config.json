@@ -1,0 +1,89 @@
+{
+    "Global": {
+        "TenantId": "",
+        "BackupRoot": "C:\\M365DSCBackups",
+        "DefaultWorkloads": [
+            "Entra",
+            "Teams",
+            "Exchange",
+            "Purview",
+            "SharePoint",
+            "OneDrive",
+            "Intune",
+            "Defender",
+            "O365Services"
+        ],
+        "DefaultApplicationId": "",
+        "DefaultCertThumbprint": ""
+    },
+    "Workloads": [
+        {
+            "Name": "Entra",
+            "ApplicationId": "",
+            "CertificateThumbprint": "",
+            "Components": []
+        },
+        {
+            "Name": "Teams",
+            "ApplicationId": "",
+            "CertificateThumbprint": "",
+            "Components": []
+        },
+        {
+            "Name": "Exchange",
+            "ApplicationId": "",
+            "CertificateThumbprint": "",
+            "Components": []
+        },
+        {
+            "Name": "Purview",
+            "ApplicationId": "",
+            "CertificateThumbprint": "",
+            "Components": []
+        },
+        {
+            "Name": "SharePoint",
+            "ApplicationId": "",
+            "CertificateThumbprint": "",
+            "Components": []
+        },
+        {
+            "Name": "OneDrive",
+            "ApplicationId": "",
+            "CertificateThumbprint": "",
+            "Components": []
+        },
+        {
+            "Name": "Intune",
+            "ApplicationId": "",
+            "CertificateThumbprint": "",
+            "Components": []
+        },
+        {
+            "Name": "Defender",
+            "ApplicationId": "",
+            "CertificateThumbprint": "",
+            "Components": []
+        },
+        {
+            "Name": "O365Services",
+            "ApplicationId": "",
+            "CertificateThumbprint": "",
+            "Components": []
+        }
+    ],
+    "Storage": {
+        "AccountName": "",
+        "ContainerName": "m365dsc-backups",
+        "ResourceGroup": "",
+        "SubscriptionId": "",
+        "UseManagedIdentity": false,
+        "ManagedIdentityClientId": "",
+        "SPAppId": "",
+        "SPCertThumbprint": ""
+    },
+    "Email": {
+        "From": "",
+        "To": []
+    }
+}
