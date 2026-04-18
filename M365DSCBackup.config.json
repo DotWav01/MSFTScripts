@@ -83,7 +83,10 @@
         "SPCertThumbprint": ""
     },
     "Email": {
+        "Enabled": true,
         "From": "",
-        "To": []
+        "To": [],
+        "AppId": "",
+        "CertThumbprint": ""
     }
 }
