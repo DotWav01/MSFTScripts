@@ -122,7 +122,7 @@
 
 .NOTES
     Author      : IT Infrastructure
-    Version     : 1.6.0
+    Version     : 1.6.2
     Requires    : Microsoft365DSC, Az.Storage, Az.Accounts modules
     Auth model  : Per-workload credentials in config file. Workloads that share a real-world SPN
                   (Exchange+Purview, SharePoint+OneDrive, Intune+Defender) use the same AppId and
@@ -524,9 +524,11 @@ function Send-ToAzureBlob {
     )
     $uploadedUrls = @()
     try {
+        if ($SubscriptionId) {
+            Set-AzContext -SubscriptionId $SubscriptionId -ErrorAction Stop | Out-Null
+        }
         $getParams = @{ Name = $StorageAccountName; ErrorAction = 'Stop' }
-        if ($ResourceGroup)   { $getParams['ResourceGroupName'] = $ResourceGroup }
-        if ($SubscriptionId)  { $getParams['DefaultProfile'] = (Get-AzContext -ListAvailable | Where-Object { $_.Subscription.Id -eq $SubscriptionId } | Select-Object -First 1) }
+        if ($ResourceGroup) { $getParams['ResourceGroupName'] = $ResourceGroup }
         $storageAccount = Get-AzStorageAccount @getParams
         if (-not $storageAccount) { throw "Storage account '$StorageAccountName' not found." }
         $ctx = $storageAccount.Context
@@ -606,9 +608,9 @@ function Send-BackupSummaryEmail {
 function Build-SummaryHtml {
     param([hashtable[]]$Results, [string]$RunTimestamp, [string]$BackupRoot)
 
-    $successCount = ($Results | Where-Object { $_.Status -eq 'Success' }).Count
-    $failCount    = ($Results | Where-Object { $_.Status -eq 'Failed'  }).Count
-    $totalCount   = $Results.Count
+    $successCount = @($Results | Where-Object { $_.Status -eq 'Success' }).Count
+    $failCount    = @($Results | Where-Object { $_.Status -eq 'Failed'  }).Count
+    $totalCount   = @($Results).Count
 
     $rowsHtml = foreach ($r in $Results) {
         $statusColor = if ($r.Status -eq 'Success') { '#107C10' } else { '#A80000' }
@@ -817,8 +819,8 @@ function Invoke-WorkloadBackup {
 
             # Purge local files only if every file was successfully uploaded
             # (guard: uploaded URL count must match files attempted)
-            $uploadedCount = $result.BlobUrls.Count
-            $attemptedCount = $filesToUpload.Count
+            $uploadedCount = @($result.BlobUrls).Count
+            $attemptedCount = @($filesToUpload).Count
             if ($uploadedCount -gt 0 -and $uploadedCount -eq $attemptedCount) {
                 Write-Log "[$WorkloadName] Upload complete ($uploadedCount/$attemptedCount files). Purging local copies..."
                 try {
@@ -900,7 +902,7 @@ function Main {
     $effectiveBackupRoot    = Resolve-Setting $BackupRoot             $cfgBackupRoot
     $effectiveTenantId      = Resolve-Setting $TenantId              $cfgTenantId
     $effectiveTenantName    = Resolve-Setting $TenantName            $cfgTenantName
-    $effectiveWorkloads     = if ($Workloads) { $Workloads } elseif ($cfgGlobal -and $cfgGlobal.DefaultWorkloads) { [string[]]$cfgGlobal.DefaultWorkloads } else { @() }
+    $effectiveWorkloads     = if ($Workloads) { [string[]]@($Workloads) } elseif ($cfgGlobal -and $cfgGlobal.DefaultWorkloads) { [string[]]$cfgGlobal.DefaultWorkloads } else { @() }
     $effectiveStorAcct      = Resolve-Setting $StorageAccountName    $cfgStorAcct
     $effectiveStorContainer = Resolve-Setting $StorageContainerName  $cfgStorContainer  'm365dsc-backups'
     $effectiveStorRG        = Resolve-Setting $StorageResourceGroup  $cfgStorRG
@@ -1017,13 +1019,13 @@ function Main {
     # ── Summary ───────────────────────────────────────────────────────────────
     Write-Log "──────────────────────────────────────────"
     $workloadResults = @($allResults | Where-Object { $_ -is [System.Collections.Specialized.OrderedDictionary] })
-    $success = ($workloadResults | Where-Object { $_.Status -eq 'Success' }).Count
-    $failed  = ($workloadResults | Where-Object { $_.Status -eq 'Failed'  }).Count
+    $success = @($workloadResults | Where-Object { $_.Status -eq 'Success' }).Count
+    $failed  = @($workloadResults | Where-Object { $_.Status -eq 'Failed'  }).Count
     Write-Log "Run complete | Success: $success | Failed: $failed" -Level $(if ($failed -eq 0) { 'SUCCESS' } else { 'WARN' })
 
     # ── Send email ────────────────────────────────────────────────────────────
     if ($doEmail) {
-        if (-not $effectiveEmailFrom -or $effectiveEmailTo.Count -eq 0 -or -not $effectiveEmailSPAppId -or -not $effectiveEmailSPCert) {
+        if (-not $effectiveEmailFrom -or @($effectiveEmailTo).Count -eq 0 -or -not $effectiveEmailSPAppId -or -not $effectiveEmailSPCert) {
             Write-Log "Email parameters incomplete (From/To/AppId/CertThumbprint required) — skipping email." -Level WARN
         } else {
             $htmlBody = Build-SummaryHtml `
