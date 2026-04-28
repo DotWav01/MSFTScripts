@@ -122,7 +122,7 @@
 
 .NOTES
     Author      : IT Infrastructure
-    Version     : 1.6.2
+    Version     : 1.6.3
     Requires    : Microsoft365DSC, Az.Storage, Az.Accounts modules
     Auth model  : Per-workload credentials in config file. Workloads that share a real-world SPN
                   (Exchange+Purview, SharePoint+OneDrive, Intune+Defender) use the same AppId and
@@ -740,7 +740,7 @@ function Invoke-WorkloadBackup {
             @($WorkloadDef.Components)
         }
 
-        Write-Log "[$WorkloadName] Starting export | Components: $($components.Count)"
+        Write-Log "[$WorkloadName] Starting export | Components: $(@($components).Count)"
 
         # Build folder structure: <BackupRoot>\<FolderPrefix>\<BackupPrefix>_<Timestamp>
         $parentFolder = Join-Path $BackupRoot $WorkloadDef.FolderPrefix
@@ -923,7 +923,7 @@ function Main {
     if (-not $effectiveBackupRoot)   { throw 'BackupRoot is required.' }
     if (-not $effectiveTenantId)     { throw 'TenantId is required (GUID format — used for Azure Storage and Graph auth).' }
     if (-not $effectiveTenantName)   { throw 'TenantName is required (domain format, e.g. contoso.onmicrosoft.com — used for M365DSC exports).' }
-    if ($effectiveWorkloads.Count -eq 0) { throw 'No workloads specified. Use -Workloads or set DefaultWorkloads in config. Valid values: Entra, Teams, Exchange, Purview, SharePoint, OneDrive, Intune, Defender, O365Services' }
+    if (@($effectiveWorkloads).Count -eq 0) { throw 'No workloads specified. Use -Workloads or set DefaultWorkloads in config. Valid values: Entra, Teams, Exchange, Purview, SharePoint, OneDrive, Intune, Defender, O365Services' }
 
     # Validate workload names
     foreach ($wl in $effectiveWorkloads) {
@@ -1033,7 +1033,7 @@ function Main {
                 -RunTimestamp  $Script:RunTimestamp `
                 -BackupRoot    $effectiveBackupRoot
 
-            $subject = "M365DSC Backup - $Script:RunTimestamp `| $success/$($workloadResults.Count) Succeeded"
+            $subject = "M365DSC Backup - $Script:RunTimestamp `| $success/$(@($workloadResults).Count) Succeeded"
 
             Send-BackupSummaryEmail `
                 -TenantId        $effectiveTenantId `
