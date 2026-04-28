@@ -1,4 +1,3 @@
-
 #Requires -Version 5.1
 #Requires -Modules Microsoft365DSC, Az.Storage, Az.Accounts
 
@@ -123,7 +122,7 @@
 
 .NOTES
     Author      : IT Infrastructure
-    Version     : 1.5.1
+    Version     : 1.6.0
     Requires    : Microsoft365DSC, Az.Storage, Az.Accounts modules
     Auth model  : Per-workload credentials in config file. Workloads that share a real-world SPN
                   (Exchange+Purview, SharePoint+OneDrive, Intune+Defender) use the same AppId and
@@ -213,8 +212,7 @@ $Script:WorkloadMap = @{
             'AADEntitlementManagementConnectedOrganization',
             'AADEntitlementManagementSettings', 'AADExternalIdentityPolicy',
             'AADGroup', 'AADGroupLifecyclePolicy', 'AADGroupsNamingPolicy',
-            'AADGroupsSettings', 'AADIdentityAPIConnector', 'AADIdentityB2CUserFlow',
-            'AADIdentityGovernanceLifecycleWorkflow',
+            'AADGroupsSettings', 'AADIdentityGovernanceLifecycleWorkflow',
             'AADIdentityGovernanceLifecycleWorkflowSettings',
             'AADLifecycleWorkflowsSettings', 'AADNamedLocationPolicy',
             'AADNetworkAccessForwardingProfile', 'AADNetworkAccessForwardingPolicyLink',
@@ -520,12 +518,17 @@ function Send-ToAzureBlob {
         [string]   $StorageAccountName,
         [string]   $ContainerName,
         [string[]] $FilePaths,
-        [string]   $BlobPathPrefix   # e.g. 'SPO_Configs/SPO_ODFB_Backup_2026-03-27'
+        [string]   $BlobPathPrefix,  # e.g. 'SPO_Configs/SPO_ODFB_Backup_2026-03-27'
+        [string]   $ResourceGroup,
+        [string]   $SubscriptionId
     )
     $uploadedUrls = @()
     try {
-        $storageAccount = Get-AzStorageAccount | Where-Object { $_.StorageAccountName -eq $StorageAccountName }
-        if (-not $storageAccount) { throw "Storage account '$StorageAccountName' not found in current subscription." }
+        $getParams = @{ Name = $StorageAccountName; ErrorAction = 'Stop' }
+        if ($ResourceGroup)   { $getParams['ResourceGroupName'] = $ResourceGroup }
+        if ($SubscriptionId)  { $getParams['DefaultProfile'] = (Get-AzContext -ListAvailable | Where-Object { $_.Subscription.Id -eq $SubscriptionId } | Select-Object -First 1) }
+        $storageAccount = Get-AzStorageAccount @getParams
+        if (-not $storageAccount) { throw "Storage account '$StorageAccountName' not found." }
         $ctx = $storageAccount.Context
 
         # Ensure container exists
@@ -545,7 +548,8 @@ function Send-ToAzureBlob {
             $blobName = "$BlobPathPrefix/$(Split-Path $file -Leaf)"
             if ($PSCmdlet.ShouldProcess($blobName, "Upload to blob container '$ContainerName'")) {
                 Set-AzStorageBlobContent -File $file -Container $ContainerName `
-                    -Blob $blobName -Context $ctx -Force | Out-Null
+                    -Blob $blobName -Context $ctx -Force `
+                    -WarningAction SilentlyContinue | Out-Null
                 $url = "https://$StorageAccountName.blob.core.windows.net/$ContainerName/$blobName"
                 Write-Log "Uploaded: $blobName" -Level SUCCESS
                 $uploadedUrls += $url
@@ -706,6 +710,8 @@ function Invoke-WorkloadBackup {
         [string[]]  $OverrideComponents, # from config file
         [string]    $StorageAccountName,
         [string]    $StorageContainerName,
+        [string]    $StorageResourceGroup,
+        [string]    $StorageSubscriptionId,
         [bool]      $DoUpload,
         [bool]      $DoReport,
         [string]    $ReportsDir
@@ -800,11 +806,13 @@ function Invoke-WorkloadBackup {
                 $filesToUpload += $result.ReportPath
             }
 
-            $urls = Send-ToAzureBlob `
+            $urls = @(Send-ToAzureBlob `
                 -StorageAccountName $StorageAccountName `
                 -ContainerName      $StorageContainerName `
                 -FilePaths          $filesToUpload `
-                -BlobPathPrefix     $blobPrefix
+                -BlobPathPrefix     $blobPrefix `
+                -ResourceGroup      $StorageResourceGroup `
+                -SubscriptionId     $StorageSubscriptionId)
             $result.BlobUrls = $urls
 
             # Purge local files only if every file was successfully uploaded
@@ -997,6 +1005,8 @@ function Main {
             -OverrideComponents   $overrideComps `
             -StorageAccountName   $effectiveStorAcct `
             -StorageContainerName $effectiveStorContainer `
+            -StorageResourceGroup $effectiveStorRG `
+            -StorageSubscriptionId $effectiveStorSubId `
             -DoUpload             $doUpload `
             -DoReport             $doReport `
             -ReportsDir           $reportsDir
@@ -1006,8 +1016,9 @@ function Main {
 
     # ── Summary ───────────────────────────────────────────────────────────────
     Write-Log "──────────────────────────────────────────"
-    $success = ($allResults | Where-Object { $_.Status -eq 'Success' }).Count
-    $failed  = ($allResults | Where-Object { $_.Status -eq 'Failed'  }).Count
+    $workloadResults = @($allResults | Where-Object { $_ -is [System.Collections.Specialized.OrderedDictionary] })
+    $success = ($workloadResults | Where-Object { $_.Status -eq 'Success' }).Count
+    $failed  = ($workloadResults | Where-Object { $_.Status -eq 'Failed'  }).Count
     Write-Log "Run complete | Success: $success | Failed: $failed" -Level $(if ($failed -eq 0) { 'SUCCESS' } else { 'WARN' })
 
     # ── Send email ────────────────────────────────────────────────────────────
@@ -1016,11 +1027,11 @@ function Main {
             Write-Log "Email parameters incomplete (From/To/AppId/CertThumbprint required) — skipping email." -Level WARN
         } else {
             $htmlBody = Build-SummaryHtml `
-                -Results       $allResults `
+                -Results       $workloadResults `
                 -RunTimestamp  $Script:RunTimestamp `
                 -BackupRoot    $effectiveBackupRoot
 
-            $subject = "M365DSC Backup - $Script:RunTimestamp `| $success/$($allResults.Count) Succeeded"
+            $subject = "M365DSC Backup - $Script:RunTimestamp `| $success/$($workloadResults.Count) Succeeded"
 
             Send-BackupSummaryEmail `
                 -TenantId        $effectiveTenantId `
