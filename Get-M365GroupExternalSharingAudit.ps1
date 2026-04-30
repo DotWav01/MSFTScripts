@@ -109,7 +109,7 @@ param (
 
 #region --- Initialization & Logging ---
 
-$ScriptVersion = "1.0.0"
+$ScriptVersion = "1.1.0"
 $Timestamp      = Get-Date -Format "yyyyMMdd_HHmmss"
 $LogFile        = Join-Path $OutputPath "GroupAudit_$Timestamp.log"
 
@@ -216,9 +216,18 @@ function Get-M365GroupsWithExternalUsers {
 
         Write-Verbose "[$GroupCounter/$($AllGroups.Count)] Processing: $($Group.DisplayName)"
 
-        # Retrieve group members
+        # Use direct Graph API call instead of Get-MgGroupMember to ensure userType and
+        # userPrincipalName are populated. The SDK's -Property parameter on Get-MgGroupMember
+        # does not reliably populate AdditionalProperties for these fields.
         try {
-            $Members = Get-MgGroupMember -GroupId $Group.Id -All -Property "Id,UserPrincipalName,DisplayName,Mail,UserType" -ErrorAction Stop
+            $Uri     = "https://graph.microsoft.com/v1.0/groups/$($Group.Id)/members/microsoft.graph.user?`$select=id,displayName,userPrincipalName,mail,userType&`$top=999"
+            $Members = @()
+
+            do {
+                $Response = Invoke-MgGraphRequest -Uri $Uri -Method GET -ErrorAction Stop
+                $Members += $Response.value
+                $Uri      = $Response.'@odata.nextLink'
+            } while ($Uri)
         }
         catch {
             Write-Log "Could not retrieve members for group '$($Group.DisplayName)': $_" -Level WARN
@@ -227,31 +236,27 @@ function Get-M365GroupsWithExternalUsers {
 
         # Filter for external/guest users - identified by '#EXT#' in UPN or UserType = 'Guest'
         $ExternalMembers = $Members | Where-Object {
-            $_.AdditionalProperties["userPrincipalName"] -like "*#EXT#*" -or
-            $_.AdditionalProperties["userType"] -eq "Guest"
+            $_.userPrincipalName -like "*#EXT#*" -or $_.userType -eq "Guest"
         }
 
         if ($ExternalMembers.Count -gt 0) {
             Write-Log "  Found $($ExternalMembers.Count) external user(s) in: $($Group.DisplayName)" -Level WARN
 
             foreach ($ExtUser in $ExternalMembers) {
-                $Upn         = $ExtUser.AdditionalProperties["userPrincipalName"]
-                $DisplayName = $ExtUser.AdditionalProperties["displayName"]
-                $Mail        = $ExtUser.AdditionalProperties["mail"]
-                $UserType    = $ExtUser.AdditionalProperties["userType"]
+                $Upn         = $ExtUser.userPrincipalName
+                $DisplayName = $ExtUser.displayName
+                $Mail        = $ExtUser.mail
+                $UserType    = $ExtUser.userType
 
-                # Derive the original external email from the UPN (#EXT# format)
+                # Derive the original external email from the B2B UPN encoding
+                # Format: localpart_domain.com#EXT#@tenant.onmicrosoft.com
+                # Last underscore before #EXT# is the @ separator
                 $ExternalEmail = if ($Upn -like "*#EXT#*") {
-                    ($Upn -split "#EXT#")[0] -replace "_", "@" | ForEach-Object {
-                        # Handle multiple underscores: only last _ is the @ separator
-                        $Parts = $Upn -split "#EXT#"
-                        $LocalPart = $Parts[0]
-                        # Reverse the encoding: last underscore = @
-                        $AtIndex = $LocalPart.LastIndexOf("_")
-                        if ($AtIndex -ge 0) {
-                            $LocalPart.Substring(0, $AtIndex) + "@" + $LocalPart.Substring($AtIndex + 1)
-                        } else { $LocalPart }
-                    }
+                    $LocalPart = ($Upn -split "#EXT#")[0]
+                    $AtIndex   = $LocalPart.LastIndexOf("_")
+                    if ($AtIndex -ge 0) {
+                        $LocalPart.Substring(0, $AtIndex) + "@" + $LocalPart.Substring($AtIndex + 1)
+                    } else { $LocalPart }
                 } else { $Mail }
 
                 $Results.Add([PSCustomObject]@{
@@ -261,7 +266,7 @@ function Get-M365GroupsWithExternalUsers {
                     GroupVisibility   = $Group.Visibility
                     HasTeamsSite      = $HasTeams
                     GroupCreated      = $Group.CreatedDateTime
-                    ExternalUserId    = $ExtUser.Id
+                    ExternalUserId    = $ExtUser.id
                     ExternalUPN       = $Upn
                     ExternalEmail     = $ExternalEmail
                     ExternalDisplay   = $DisplayName
@@ -293,17 +298,32 @@ function Get-SecurityGroupSharePointAssignments {
     Write-Log "--- Part 2: Auditing Entra ID Security Group SharePoint Assignments ---"
     $Results = [System.Collections.Generic.List[PSCustomObject]]::new()
 
-    # Get all SharePoint sites
-    Write-Log "Retrieving SharePoint sites via Graph API..."
+    # Get all SharePoint sites via the search=* API.
+    # IMPORTANT: Get-MgSite -All does NOT enumerate tenant sites without a search query
+    # and will always return 0 results. The /sites?search=* endpoint is the correct approach.
+    Write-Log "Retrieving SharePoint sites via Graph search API..."
+    $Sites = [System.Collections.Generic.List[PSCustomObject]]::new()
     try {
-        $Sites = Get-MgSite -All -Property "Id,DisplayName,WebUrl,Name" -ErrorAction Stop
+        $Uri = "https://graph.microsoft.com/v1.0/sites?search=*&`$select=id,displayName,webUrl,name&`$top=200"
 
-        # Filter out personal sites (OneDrive)
-        $Sites = $Sites | Where-Object { $_.WebUrl -notlike "*/personal/*" }
+        do {
+            $Response = Invoke-MgGraphRequest -Uri $Uri -Method GET -ErrorAction Stop
+            foreach ($Site in $Response.value) {
+                if ($Site.webUrl -notlike "*/personal/*") {
+                    $Sites.Add([PSCustomObject]@{
+                        Id          = $Site.id
+                        DisplayName = $Site.displayName
+                        WebUrl      = $Site.webUrl
+                        Name        = $Site.name
+                    })
+                }
+            }
+            $Uri = $Response.'@odata.nextLink'
+        } while ($Uri)
 
         if ($MaxSites -gt 0) {
-            Write-Log "MaxSites limit applied: processing first $MaxSites sites." -Level WARN
-            $Sites = $Sites | Select-Object -First $MaxSites
+            Write-Log "MaxSites limit applied: processing first $MaxSites of $($Sites.Count) sites." -Level WARN
+            $Sites = [System.Collections.Generic.List[PSCustomObject]]($Sites | Select-Object -First $MaxSites)
         }
 
         Write-Log "Processing $($Sites.Count) SharePoint sites."
