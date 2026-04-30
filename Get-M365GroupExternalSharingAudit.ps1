@@ -75,7 +75,7 @@
         - SharePoint site permission enumeration via PnP requires a separate PnP connection.
 
     Author:  IT Infrastructure Team
-    Version: 1.0.0
+    Version: 1.1.1
 #>
 
 #Requires -Modules Microsoft.Graph.Authentication, Microsoft.Graph.Groups, Microsoft.Graph.Users, Microsoft.Graph.Sites
@@ -109,7 +109,7 @@ param (
 
 #region --- Initialization & Logging ---
 
-$ScriptVersion = "1.1.0"
+$ScriptVersion = "1.1.1"
 $Timestamp      = Get-Date -Format "yyyyMMdd_HHmmss"
 $LogFile        = Join-Path $OutputPath "GroupAudit_$Timestamp.log"
 
@@ -304,7 +304,7 @@ function Get-SecurityGroupSharePointAssignments {
     Write-Log "Retrieving SharePoint sites via Graph search API..."
     $Sites = [System.Collections.Generic.List[PSCustomObject]]::new()
     try {
-        $Uri = "https://graph.microsoft.com/v1.0/sites?search=*&`$select=id,displayName,webUrl,name&`$top=200"
+        $Uri = "https://graph.microsoft.com/v1.0/sites?search=%2A&`$select=id,displayName,webUrl,name&`$top=200"
 
         do {
             $Response = Invoke-MgGraphRequest -Uri $Uri -Method GET -ErrorAction Stop
