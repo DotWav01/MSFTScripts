@@ -75,7 +75,7 @@
         - SharePoint site permission enumeration via PnP requires a separate PnP connection.
 
     Author:  IT Infrastructure Team
-    Version: 1.1.1
+    Version: 1.1.2
 #>
 
 #Requires -Modules Microsoft.Graph.Authentication, Microsoft.Graph.Groups, Microsoft.Graph.Users, Microsoft.Graph.Sites
@@ -109,7 +109,7 @@ param (
 
 #region --- Initialization & Logging ---
 
-$ScriptVersion = "1.1.1"
+$ScriptVersion = "1.1.2"
 $Timestamp      = Get-Date -Format "yyyyMMdd_HHmmss"
 $LogFile        = Join-Path $OutputPath "GroupAudit_$Timestamp.log"
 
@@ -304,10 +304,13 @@ function Get-SecurityGroupSharePointAssignments {
     Write-Log "Retrieving SharePoint sites via Graph search API..."
     $Sites = [System.Collections.Generic.List[PSCustomObject]]::new()
     try {
-        $Uri = "https://graph.microsoft.com/v1.0/sites?search=%2A&`$select=id,displayName,webUrl,name&`$top=200"
+        # The /sites?search= endpoint requires ConsistencyLevel: eventual header.
+        # Without it, Graph returns HTTP 400 even with valid syntax and correct permissions.
+        $Uri     = "https://graph.microsoft.com/v1.0/sites?search=%2A&`$select=id,displayName,webUrl,name&`$top=200"
+        $Headers = @{ "ConsistencyLevel" = "eventual" }
 
         do {
-            $Response = Invoke-MgGraphRequest -Uri $Uri -Method GET -ErrorAction Stop
+            $Response = Invoke-MgGraphRequest -Uri $Uri -Method GET -Headers $Headers -ErrorAction Stop
             foreach ($Site in $Response.value) {
                 if ($Site.webUrl -notlike "*/personal/*") {
                     $Sites.Add([PSCustomObject]@{
